@@ -17,6 +17,7 @@
 set -euo pipefail
 
 GITHUB_REPO="gabrielmf1998/brim"
+RAW_BASE="https://raw.githubusercontent.com/gabrielmf1998/brim/main"
 GITLAB_REPO="gabriel17166/brim"
 GITLAB_ID="$(printf '%s' "$GITLAB_REPO" | sed 's|/|%2F|')"
 
@@ -59,12 +60,42 @@ done
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
+# Escalate the way that actually works here. Piping this script into bash
+# leaves no terminal for sudo to prompt on, so fall back to pkexec, which
+# asks graphically. Trying sudo blind would just fail with a confusing error.
+can_escalate() {
+  [ "$(id -u)" = "0" ] && return 0
+  { [ -t 0 ] || [ -t 1 ]; } && need sudo && return 0
+  need pkexec && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && return 0
+  need sudo && return 0
+  return 1
+}
+
+as_root() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  elif { [ -t 0 ] || [ -t 1 ]; } && need sudo; then
+    say "You will be asked for your password."
+    sudo "$@"
+  elif need pkexec && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+    say "An authentication window will open."
+    pkexec "$@"
+  elif need sudo; then
+    say "You will be asked for your password."
+    sudo "$@"
+  else
+    die "Need root to install the RPM, but neither sudo nor pkexec is usable.
+Try the AppImage instead:
+  curl -fsSL $RAW_BASE/get-brim.sh | bash -s -- --method appimage"
+  fi
+}
+
 # ---------------------------------------------------------------- uninstall
 
 if [ "$DO_UNINSTALL" -eq 1 ]; then
   step "Removing Brim"
   if rpm -q brim >/dev/null 2>&1; then
-    sudo dnf remove -y brim
+    as_root dnf remove -y brim
   fi
   rm -f "$APPS_DIR"/Brim-*.AppImage
   rm -f "$BIN_DIR/brim" "$DESKTOP_DIR/brim.desktop" "$ICON_DIR/brim.svg"
@@ -163,7 +194,7 @@ ok "Brim ${VERSION:-unknown} on $HOST"
 # ------------------------------------------------------------ pick a method
 
 if [ "$METHOD" = "auto" ]; then
-  if [ -n "$RPM_URL" ] && { need sudo || [ "$(id -u)" = "0" ]; }; then
+  if [ -n "$RPM_URL" ] && can_escalate; then
     METHOD="rpm"
   elif [ -n "$APPIMAGE_URL" ]; then
     METHOD="appimage"
@@ -185,13 +216,8 @@ case "$METHOD" in
     step "Installing the RPM"
     say "${dim}$RPM_URL${reset}"
     curl -fSL --progress-bar -o "$TMP/brim.rpm" "$RPM_URL"
-    if [ "$(id -u)" = "0" ]; then
-      dnf install -y "$TMP/brim.rpm"
-    else
-      need sudo || die "sudo is required for the RPM. Try --method appimage."
-      say "You will be asked for your password."
-      sudo dnf install -y "$TMP/brim.rpm"
-    fi
+    # pkexec drops the caller's environment, so hand dnf an absolute path.
+    as_root dnf install -y "$TMP/brim.rpm"
     ok "Installed. Run it with: brim"
     ;;
 
@@ -207,10 +233,10 @@ case "$METHOD" in
       say "The AppImage ships Brim itself but uses your system's libdnf5, because"
       say "it has to be the same one your package manager uses."
       say ""
-      if need sudo; then
+      if can_escalate; then
         say "Installing them now."
         # shellcheck disable=SC2086
-        sudo dnf install -y $MISSING || die "Could not install:$MISSING"
+        as_root dnf install -y $MISSING || die "Could not install:$MISSING"
       else
         die "Install them first: sudo dnf install$MISSING"
       fi
@@ -227,7 +253,7 @@ case "$METHOD" in
     ln -sf "$TARGET" "$BIN_DIR/brim"
 
     curl -fsSL -o "$ICON_DIR/brim.svg" \
-      "https://raw.githubusercontent.com/$GITHUB_REPO/main/data/icons/brim.svg" \
+      "$RAW_BASE/data/icons/brim.svg" \
       2>/dev/null || true
 
     cat > "$DESKTOP_DIR/brim.desktop" <<DESKTOP
