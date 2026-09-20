@@ -27,6 +27,8 @@ DEFAULTS: dict = {
     # Hand installed RPMs have no repo watching them, so Brim checks upstream.
     "check_sideloaded": True,
     "sideload_map": {},
+    # Table layout: widths and hidden columns, keyed by column index.
+    "columns": {},
 }
 
 SELF_UPDATE_MODES = [

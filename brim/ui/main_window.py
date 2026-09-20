@@ -174,6 +174,9 @@ class MainWindow(QMainWindow):
         )
         self.sources.run_command.connect(self.run_command)
         self.sources.refresh_requested.connect(lambda: self.reload())
+        self.sources.backends_changed.connect(self._on_backends_changed)
+        self.browse.sources_changed.connect(self._sync_source_toggles)
+        self.browse.reload_requested.connect(lambda: self.reload())
         self.settings.backends_changed.connect(self._on_backends_changed)
         self.settings.update_available.connect(self._on_brim_update)
         self.settings.update_mode_changed.connect(self._arm_self_update_timer)
@@ -311,11 +314,32 @@ class MainWindow(QMainWindow):
             if quiet and self.config.get("notify_updates"):
                 self.tray.notify_updates(count)
 
+    def _sync_source_toggles(self) -> None:
+        """Chips changed: mirror them everywhere, without reloading."""
+        for bid, box in getattr(self.settings, "backend_boxes", {}).items():
+            box.blockSignals(True)
+            box.setChecked(self.config.backend_enabled(bid))
+            box.blockSignals(False)
+        if hasattr(self.sources, "chk_copr"):
+            self.sources.chk_copr.blockSignals(True)
+            self.sources.chk_copr.setChecked(self.config.backend_enabled("copr"))
+            self.sources.chk_copr.blockSignals(False)
+
     def _on_backends_changed(self) -> None:
+        """Keep the chips, the settings boxes and the sources page in step."""
         for bid, chip in self.browse.chips.items():
             chip.blockSignals(True)
             chip.setChecked(self.config.backend_enabled(bid))
             chip.blockSignals(False)
+        for bid, box in getattr(self.settings, "backend_boxes", {}).items():
+            box.blockSignals(True)
+            box.setChecked(self.config.backend_enabled(bid))
+            box.blockSignals(False)
+        if hasattr(self.sources, "chk_copr"):
+            self.sources.chk_copr.blockSignals(True)
+            self.sources.chk_copr.setChecked(self.config.backend_enabled("copr"))
+            self.sources.chk_copr.blockSignals(False)
+            self.sources._refresh_copr_note()
         self.reload()
 
     def _arm_timer(self) -> None:

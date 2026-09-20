@@ -26,6 +26,13 @@ from PySide6.QtWidgets import (
 
 from . import theme
 
+GROUP_NOTES = {
+    "dnf": "Repositories dnf reads on this machine",
+    "copr": "Community projects already enabled here. Search covers all of COPR.",
+    "flatpak": "Remotes flatpak reads, user and system",
+    "appimage": "Community catalog, searched over the network",
+}
+
 RPMFUSION = (
     "https://mirrors.rpmfusion.org/free/fedora/"
     "rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm "
@@ -43,16 +50,21 @@ FLATPAK_PRESETS = {
 class AddCoprDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Enable a COPR project")
+        self.setWindowTitle("Add a COPR project to dnf")
         self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
 
-        layout.addWidget(
-            QLabel(
-                "Enter the project as <b>owner/project</b>, for example "
-                "<code>ilyaz/LACT</code>."
-            )
+        intro = QLabel(
+            "<b>You do not need to do this to use COPR.</b><br>"
+            "Brim already searches every public COPR project, and installing "
+            "from a search result enables that project for you.<br><br>"
+            "Add one here only if you want it wired into dnf up front, so its "
+            "packages show up in the normal DNF list.<br><br>"
+            "Enter it as <b>owner/project</b>, for example <code>ilyaz/LACT</code>."
         )
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(intro)
         self.field = QLineEdit()
         self.field.setPlaceholderText("owner/project")
         layout.addWidget(self.field)
@@ -118,6 +130,7 @@ class AddRemoteDialog(QDialog):
 class SourcesPage(QWidget):
     run_command = Signal(list, bool, str)
     refresh_requested = Signal()
+    backends_changed = Signal()
 
     def __init__(self, catalog, config, parent=None) -> None:
         super().__init__(parent)
@@ -129,10 +142,34 @@ class SourcesPage(QWidget):
         root.setSpacing(10)
 
         header = QLabel(
-            "Everything Brim can pull from. Toggle a row to enable or disable it."
+            "Everything Brim can pull from. Toggle a row to enable or disable it.<br>"
+            "<span style='opacity:0.75;'>Searching is controlled by the source "
+            "chips on the Browse page. This page is about which repositories "
+            "those searches reach.</span>"
         )
-        header.setStyleSheet("opacity: 0.8;")
+        header.setTextFormat(Qt.TextFormat.RichText)
+        header.setWordWrap(True)
+        header.setStyleSheet("opacity: 0.9;")
         root.addWidget(header)
+
+        panel = QFrame()
+        panel.setFrameShape(QFrame.Shape.StyledPanel)
+        panel_box = QVBoxLayout(panel)
+        panel_box.setContentsMargins(12, 10, 12, 10)
+        panel_box.setSpacing(8)
+
+        self.copr_note = QLabel("")
+        self.copr_note.setTextFormat(Qt.TextFormat.RichText)
+        self.copr_note.setWordWrap(True)
+        panel_box.addWidget(self.copr_note)
+
+        # The switch people come to this page looking for.
+        self.chk_copr = QCheckBox("Search all of COPR")
+        self.chk_copr.setIcon(theme.source_icon("copr"))
+        self.chk_copr.setChecked(self.config.backend_enabled("copr"))
+        self.chk_copr.toggled.connect(self._toggle_copr)
+        panel_box.addWidget(self.chk_copr)
+        root.addWidget(panel)
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
@@ -171,8 +208,12 @@ class SourcesPage(QWidget):
         layout = QHBoxLayout(box)
         layout.setSpacing(8)
 
-        btn_copr = QPushButton("Enable a COPR")
+        btn_copr = QPushButton("Add a COPR project")
         btn_copr.setIcon(theme.icon("applications-development"))
+        btn_copr.setToolTip(
+            "Optional. Brim already searches all of COPR and enables a project "
+            "for you when you install from it. Use this to add one up front."
+        )
         btn_copr.clicked.connect(self._add_copr)
 
         btn_remote = QPushButton("Add a Flatpak remote")
@@ -190,24 +231,67 @@ class SourcesPage(QWidget):
         layout.addStretch(1)
         return box
 
+    def _toggle_copr(self, value: bool) -> None:
+        self.config.set_backend_enabled("copr", value)
+        self._refresh_copr_note()
+        self.backends_changed.emit()
+
+    def _refresh_copr_note(self) -> None:
+        """Say plainly how COPR works here, because the name misleads people."""
+        on = self.config.backend_enabled("copr")
+        colour = theme.source_color("copr").name()
+        state = (
+            f"<span style='color:{colour};font-weight:600;'>COPR search is on</span>"
+            if on
+            else "<span style='opacity:0.7;'>COPR search is off</span>"
+        )
+        self.copr_note.setText(
+            f"{state}. There is no single COPR repository to switch on. "
+            "Brim searches <b>every public COPR project</b> straight from the "
+            "build service, and when you install something it enables that one "
+            "project for you first.<br>"
+            "<span style='opacity:0.75;'>Turn the whole thing on or off with the "
+            "COPR chip on the Browse page. The projects listed below are the ones "
+            "already wired into dnf on this machine. Press F1 for what COPR costs "
+            "you.</span>"
+        )
+
     def reload(self) -> None:
+        self.chk_copr.blockSignals(True)
+        self.chk_copr.setChecked(self.config.backend_enabled("copr"))
+        self.chk_copr.blockSignals(False)
+        self._refresh_copr_note()
         self.tree.blockSignals(True)
         self.tree.clear()
 
-        enabled_ids = {
-            bid for bid in self.catalog.backends if self.config.backend_enabled(bid)
+        # This page configures repositories, so it lists every backend that
+        # exists on the machine. Whether a source is searched is a separate
+        # choice, made with the chips, and is shown per group below.
+        available = {
+            bid for bid, b in self.catalog.backends.items() if b.available
         }
-        sources = self.catalog.sources(enabled_ids)
+        sources = self.catalog.sources(available)
 
         grouped: dict[str, list] = {}
         for src in sources:
-            grouped.setdefault(src.backend, []).append(src)
+            # COPR projects arrive as dnf repos, but nobody thinks of them
+            # that way. Show them under COPR where people look for them.
+            bucket = "copr" if src.key.lower().startswith("copr:") else src.backend
+            grouped.setdefault(bucket, []).append(src)
 
-        for backend_id, items in grouped.items():
+        order = ["dnf", "copr", "flatpak", "appimage"]
+        for backend_id in sorted(grouped, key=lambda b: order.index(b) if b in order else 99):
+            items = grouped[backend_id]
             backend = self.catalog.backends.get(backend_id)
             label = backend.label if backend else backend_id
             active = sum(1 for s in items if s.enabled)
-            parent = QTreeWidgetItem([label, f"{active} of {len(items)} on", ""])
+            summary = f"{active} of {len(items)} on"
+            note = GROUP_NOTES.get(backend_id, "")
+            if backend_id in self.catalog.backends and not self.config.backend_enabled(
+                backend_id
+            ):
+                note = f"Not searched right now. {note}"
+            parent = QTreeWidgetItem([label, summary, note])
             parent.setIcon(0, theme.source_icon(backend_id))
             parent.setFlags(Qt.ItemFlag.ItemIsEnabled)
             font = parent.font(0)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTableView,
@@ -23,14 +25,28 @@ from ..backends.base import Package
 from . import theme
 from .threads import Worker, stop_all
 from .details import DetailsPane
-from .models import COL_CHECK, COL_NAME, COL_ORIGIN, COL_SIZE, PackageModel
+from .models import (
+    COL_CHECK,
+    COL_NAME,
+    COL_ORIGIN,
+    COL_SIZE,
+    COL_SOURCE,
+    COL_STATUS,
+    COL_VERSION,
+    COLUMNS,
+    PackageModel,
+)
 
 STATUSES = [
     ("all", "All", "view-list-details"),
     ("installed", "Installed", "dialog-ok"),
-    ("available", "Not installed", "list-add"),
+    ("available", "Available", "list-add"),
     ("updates", "Updates", "system-software-update"),
 ]
+
+# Which phase covers which source, so the chips can say what is still working.
+DEEP_SOURCES = frozenset({"dnf"})
+REMOTE_SOURCES = frozenset({"copr", "flatpak", "appimage"})
 
 
 class DeepSearch(Worker):
@@ -72,7 +88,12 @@ class RemoteSearch(Worker):
 
 
 class SourceChip(QPushButton):
-    """One toggleable source filter, tinted with that source's hue."""
+    """One toggleable source filter, tinted with that source's hue.
+
+    The number is always what this source is contributing to the list in
+    front of you, not a static catalogue size. During a search it counts
+    matches; with no search it counts what the current filter shows.
+    """
 
     def __init__(self, source_id: str, label: str, parent=None) -> None:
         super().__init__(parent)
@@ -83,16 +104,41 @@ class SourceChip(QPushButton):
         self.setIcon(theme.source_icon(source_id))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(30)
-        self.set_count(0, 0)
+        self._busy = False
+        self.set_state(0, 0, False, False)
         self.restyle()
 
-    def set_count(self, total: int, updates: int) -> None:
+    def set_state(
+        self, shown: int, updates: int, busy: bool, searching: bool
+    ) -> None:
+        self._busy = busy
+
+        if not self.isChecked():
+            # A zero here would read as "found nothing" rather than "not asked".
+            self.setText(f"{self.base_label}  off")
+            self.setToolTip(
+                f"{self.base_label} is switched off. Click to include it."
+            )
+            return
+
         text = self.base_label
-        if total:
-            text += f"  {total}"
-        if updates:
+        if busy:
+            text += "  ..."
+        elif searching or shown:
+            text += f"  {shown}"
+        if updates and not searching:
             text += f"  ({updates} new)"
         self.setText(text)
+
+        if searching:
+            if busy:
+                self.setToolTip(f"Still searching {self.base_label}")
+            elif shown:
+                self.setToolTip(f"{shown} match(es) from {self.base_label}")
+            else:
+                self.setToolTip(f"Searched {self.base_label}, nothing matched")
+        else:
+            self.setToolTip(f"{shown} package(s) from {self.base_label}")
 
     def set_unavailable(self, reason: str) -> None:
         self.setEnabled(False)
@@ -123,6 +169,8 @@ class SourceChip(QPushButton):
 
 class BrowsePage(QWidget):
     selection_changed = Signal(int)
+    sources_changed = Signal()
+    reload_requested = Signal()
     install_requested = Signal(list)
     remove_requested = Signal(list)
     upgrade_requested = Signal(list)
@@ -134,6 +182,9 @@ class BrowsePage(QWidget):
         self.status = "all"
         self._remote: list[Package] = []
         self._deep: list[Package] = []
+        self._busy_deep = False
+        self._busy_remote = False
+        self._searched_remote = False
         self._search_thread: RemoteSearch | None = None
         self._deep_thread: DeepSearch | None = None
 
@@ -142,6 +193,7 @@ class BrowsePage(QWidget):
         root.setSpacing(10)
 
         root.addLayout(self._build_search())
+        root.addLayout(self._build_progress())
         root.addLayout(self._build_chips())
         root.addLayout(self._build_status())
 
@@ -201,6 +253,26 @@ class BrowsePage(QWidget):
         self.search.textChanged.connect(lambda _: self.remote_timer.start())
         return row
 
+    def _build_progress(self) -> QVBoxLayout:
+        """A visible finish line, so nobody wonders whether it is still going."""
+        box = QVBoxLayout()
+        box.setSpacing(3)
+        box.setContentsMargins(0, 0, 0, 0)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(3)
+        self.progress.setVisible(False)
+        box.addWidget(self.progress)
+
+        self.search_status = QLabel("")
+        self.search_status.setTextFormat(Qt.TextFormat.RichText)
+        self.search_status.setWordWrap(True)
+        self.search_status.setVisible(False)
+        box.addWidget(self.search_status)
+        return box
+
     def _build_chips(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -219,9 +291,6 @@ class BrowsePage(QWidget):
             row.addWidget(chip)
 
         row.addStretch(1)
-        self.remote_note = QLabel("")
-        self.remote_note.setStyleSheet("opacity: 0.7;")
-        row.addWidget(self.remote_note)
         return row
 
     def _build_status(self) -> QHBoxLayout:
@@ -266,11 +335,16 @@ class BrowsePage(QWidget):
         self.table.setWordWrap(False)
 
         header = self.table.horizontalHeader()
+        # Every column is draggable. Nothing is locked to its contents, which
+        # is what stops a long origin name from pinning the layout.
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(COL_ORIGIN, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(COL_CHECK, 28)
-        self.table.setColumnWidth(COL_SIZE, 80)
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(True)
+        header.setMinimumSectionSize(28)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._column_menu)
+        header.sectionResized.connect(lambda *_: self._save_columns())
+        self._apply_column_layout()
 
         self.table.selectionModel().selectionChanged.connect(self._on_row_selected)
         self.model.dataChanged.connect(self._emit_selection_count)
@@ -310,13 +384,147 @@ class BrowsePage(QWidget):
 
     # behaviour
 
+    # ---------------------------------------------------------- columns
+
+    DEFAULT_WIDTHS = {
+        COL_CHECK: 30,
+        COL_NAME: 280,
+        COL_VERSION: 150,
+        COL_SOURCE: 100,
+        COL_ORIGIN: 170,
+        COL_STATUS: 95,
+        COL_SIZE: 85,
+    }
+
+    def _apply_column_layout(self) -> None:
+        stored = self.config.get("columns", {}) or {}
+        widths = stored.get("widths", {})
+        hidden = set(stored.get("hidden", []))
+
+        header = self.table.horizontalHeader()
+        header.blockSignals(True)
+        for index in range(len(COLUMNS)):
+            width = widths.get(str(index), self.DEFAULT_WIDTHS.get(index, 120))
+            self.table.setColumnWidth(index, int(width))
+            self.table.setColumnHidden(index, str(index) in hidden or index in hidden)
+        header.blockSignals(False)
+
+        # Whatever is left over goes to Name, so the table always fills out.
+        if not self.table.isColumnHidden(COL_NAME):
+            header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+
+    def _save_columns(self) -> None:
+        widths = {
+            str(i): self.table.columnWidth(i)
+            for i in range(len(COLUMNS))
+            if not self.table.isColumnHidden(i)
+        }
+        hidden = [
+            str(i) for i in range(len(COLUMNS)) if self.table.isColumnHidden(i)
+        ]
+        self.config.set("columns", {"widths": widths, "hidden": hidden})
+
+    def _column_menu(self, point) -> None:
+        menu = QMenu(self)
+        menu.addAction(QAction("Columns", menu)).setEnabled(False)
+        menu.addSeparator()
+
+        for index, name in enumerate(COLUMNS):
+            if index == COL_CHECK:
+                continue
+            action = QAction(name, menu)
+            action.setCheckable(True)
+            action.setChecked(not self.table.isColumnHidden(index))
+            action.toggled.connect(
+                lambda visible, col=index: self._set_column_visible(col, visible)
+            )
+            menu.addAction(action)
+
+        menu.addSeparator()
+        fit = QAction("Size columns to fit contents", menu)
+        fit.triggered.connect(self._fit_columns)
+        menu.addAction(fit)
+
+        reset = QAction("Reset to defaults", menu)
+        reset.triggered.connect(self._reset_columns)
+        menu.addAction(reset)
+
+        menu.exec(self.table.horizontalHeader().mapToGlobal(point))
+
+    def _set_column_visible(self, column: int, visible: bool) -> None:
+        # Never let the last visible column disappear.
+        if not visible:
+            remaining = [
+                i
+                for i in range(len(COLUMNS))
+                if i != COL_CHECK and not self.table.isColumnHidden(i)
+            ]
+            if len(remaining) <= 1:
+                return
+        self.table.setColumnHidden(column, not visible)
+        self._save_columns()
+
+    def _fit_columns(self) -> None:
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        widths = [self.table.columnWidth(i) for i in range(len(COLUMNS))]
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for index, width in enumerate(widths):
+            self.table.setColumnWidth(index, width + 12)
+        self._save_columns()
+
+    def _reset_columns(self) -> None:
+        self.config.set("columns", {})
+        for index in range(len(COLUMNS)):
+            self.table.setColumnHidden(index, False)
+        self._apply_column_layout()
+
+    # ---------------------------------------------------------- behaviour
+
     def enabled_sources(self) -> set[str]:
         return {bid for bid, chip in self.chips.items() if chip.isChecked()}
 
     def _on_chip_toggled(self, _checked: bool) -> None:
+        """Switching a source on has to fetch it, not just unhide it.
+
+        The catalogue only loads backends that were enabled at load time, so
+        a chip turned on later would otherwise sit at zero until the next
+        manual reload and look broken.
+        """
+        needs_load = False
+        loaded = {p.source for p in self.model.all_packages()}
         for bid, chip in self.chips.items():
-            self.config.set_backend_enabled(bid, chip.isChecked())
+            was_on = self.config.backend_enabled(bid)
+            now_on = chip.isChecked()
+            self.config.set_backend_enabled(bid, now_on)
+            backend = self.catalog.backends.get(bid)
+            if (
+                now_on
+                and not was_on
+                and bid not in loaded
+                and backend is not None
+                and backend.available
+                and not isinstance(backend, type(None))
+            ):
+                # COPR holds nothing locally, so it never needs a reload.
+                if bid != "copr":
+                    needs_load = True
+
         self.refilter()
+        self.sources_changed.emit()
+        if needs_load:
+            self.reload_requested.emit()
+
+    def all_sources_on(self) -> bool:
+        return all(c.isChecked() for c in self.chips.values() if c.isEnabled())
+
+    def enable_all_sources(self) -> None:
+        for chip in self.chips.values():
+            if chip.isEnabled():
+                chip.blockSignals(True)
+                chip.setChecked(True)
+                chip.blockSignals(False)
+        self._on_chip_toggled(True)
 
     def _on_status_clicked(self, button) -> None:
         self.status = button.property("status_key")
@@ -332,55 +540,148 @@ class BrowsePage(QWidget):
 
     def set_packages(self, packages: list[Package]) -> None:
         self.model.set_packages(packages)
-        self.refresh_chip_counts()
         self.refilter()
-
-    def refresh_chip_counts(self) -> None:
-        counts = self.catalog.counts()
-        for bid, chip in self.chips.items():
-            slot = counts.get(bid, {})
-            chip.set_count(slot.get("total", 0), slot.get("updates", 0))
 
     def refilter(self) -> None:
         text = self.search.text()
+        searching = bool(text.strip())
         sources = self.enabled_sources()
-        if text.strip():
-            extra = [
-                p for p in (self._deep + self._remote) if p.source in sources
-            ]
-        else:
-            extra = []
-        shown = self.model.apply_filter(text, sources, self.status, extra)
+        extra = (
+            [p for p in (self._deep + self._remote) if p.source in sources]
+            if searching
+            else []
+        )
+        counts = self.model.apply_filter(text, sources, self.status, extra)
+        shown = counts.get("_total", 0)
+
+        self._update_chips(counts, searching)
+        self._update_status_counts(text, sources)
+        self._update_search_status(text, counts, sources, searching)
 
         total = len(self.model.all_packages())
-        if text.strip():
-            note = f"{shown} matches"
-            deep = len([p for p in self._deep if p.source in sources])
-            net = len([p for p in self._remote if p.source in sources])
-            if deep:
-                note += f", {deep} by content"
-            if net:
-                note += f", {net} from the network"
-            self.result_label.setText(note)
+        if searching:
+            self.result_label.setText(f"{shown} shown")
         else:
             self.result_label.setText(f"{shown} of {total} packages")
 
         if shown and not self.table.currentIndex().isValid():
             self.table.selectRow(0)
 
+    def _update_chips(self, counts: dict, searching: bool) -> None:
+        """Every chip reports its share of what is on screen right now."""
+        updates = self.catalog.counts()
+        for bid, chip in self.chips.items():
+            busy = (
+                bid in DEEP_SOURCES and self._busy_deep
+            ) or (bid in REMOTE_SOURCES and self._busy_remote)
+            chip.set_state(
+                counts.get(bid, 0),
+                updates.get(bid, {}).get("updates", 0),
+                busy and chip.isChecked(),
+                searching,
+            )
+
+    def _update_status_counts(self, text: str, sources: set) -> None:
+        """Put the size of each bucket on the filter itself."""
+        pool = self.model.all_packages() + (
+            self._deep + self._remote if text.strip() else []
+        )
+        needle = text.strip().lower()
+        tally = {"all": 0, "installed": 0, "available": 0, "updates": 0}
+        for pkg in pool:
+            if pkg.source not in sources:
+                continue
+            if needle and needle not in pkg.name.lower() and needle not in pkg.summary.lower():
+                continue
+            tally["all"] += 1
+            if pkg.upgradable:
+                tally["updates"] += 1
+            if pkg.installed:
+                tally["installed"] += 1
+            else:
+                tally["available"] += 1
+
+        for button in self.status_group.buttons():
+            key = button.property("status_key")
+            label = dict((k, lbl) for k, lbl, _ in STATUSES)[key]
+            button.setText(f"{label}  {tally.get(key, 0)}")
+
+    def _update_search_status(
+        self, text: str, counts: dict, sources: set, searching: bool
+    ) -> None:
+        """Spell out which sources were searched and what each one gave back."""
+        if not searching:
+            self.progress.setVisible(False)
+            self.search_status.setVisible(False)
+            return
+
+        self.search_status.setVisible(True)
+        busy = self._busy_deep or self._busy_remote
+        self.progress.setVisible(busy)
+
+        parts = []
+        for bid, chip in self.chips.items():
+            label = theme.SOURCE_LABELS.get(bid, bid)
+            if not chip.isEnabled():
+                continue
+            if bid not in sources:
+                parts.append(
+                    f"<span style='opacity:0.45;'>{label} off</span>"
+                )
+                continue
+            source_busy = (bid in DEEP_SOURCES and self._busy_deep) or (
+                bid in REMOTE_SOURCES and self._busy_remote
+            )
+            colour = theme.source_color(bid).name()
+            if source_busy:
+                parts.append(
+                    f"<span style='opacity:0.7;'>{label} searching</span>"
+                )
+            else:
+                found = counts.get(bid, 0)
+                if found:
+                    parts.append(
+                        f"<span style='color:{colour};font-weight:600;'>{label} {found}</span>"
+                    )
+                else:
+                    parts.append(f"<span style='opacity:0.5;'>{label} 0</span>")
+
+        head = "Searching" if busy else "Searched"
+        joined = " &nbsp;&middot;&nbsp; ".join(parts)
+        off = [
+            theme.SOURCE_LABELS.get(b, b)
+            for b, c in self.chips.items()
+            if c.isEnabled() and not c.isChecked()
+        ]
+        tail = ""
+        if off and not busy:
+            tail = (
+                "<br><span style='opacity:0.7;'>Not searched: "
+                f"{', '.join(off)}. Click a chip above to include it.</span>"
+            )
+        self.search_status.setText(
+            f"<span style='opacity:0.7;'>{head}</span> &nbsp; {joined}{tail}"
+        )
+
     def _start_deep_search(self) -> None:
         query = self.search.text().strip()
         if len(query) < 3:
             self._deep = []
+            self._busy_deep = False
+            self.refilter()
             return
         if self._deep_thread and self._deep_thread.isRunning():
             return
+        self._busy_deep = True
+        self.refilter()
         self._deep_thread = DeepSearch(self.catalog, query, self.enabled_sources())
         self._deep_thread.done.connect(self._on_deep_done)
         self._deep_thread.start()
 
     def _on_deep_done(self, query: str, found: list) -> None:
+        self._busy_deep = False
         if query != self.search.text().strip():
+            self.refilter()
             return
         known = {(p.source, p.key) for p in self.model.all_packages()}
         self._deep = [p for p in found if (p.source, p.key) not in known]
@@ -390,23 +691,26 @@ class BrowsePage(QWidget):
         query = self.search.text().strip()
         if len(query) < 3:
             self._remote = []
-            self.remote_note.setText("")
+            self._busy_remote = False
+            self._searched_remote = False
+            self.refilter()
             return
         if self._search_thread and self._search_thread.isRunning():
             return
-        self.remote_note.setText("Searching COPR and the app catalogs")
+        self._busy_remote = True
+        self.refilter()
         self._search_thread = RemoteSearch(self.catalog, query, self.enabled_sources())
         self._search_thread.done.connect(self._on_remote_done)
         self._search_thread.start()
 
     def _on_remote_done(self, query: str, found: list) -> None:
+        self._busy_remote = False
+        self._searched_remote = True
         if query != self.search.text().strip():
+            self.refilter()
             return
         known = {(p.source, p.key) for p in self.model.all_packages()}
         self._remote = [p for p in found if (p.source, p.key) not in known]
-        self.remote_note.setText(
-            f"{len(self._remote)} extra from the network" if self._remote else ""
-        )
         self.refilter()
 
     def _on_row_selected(self) -> None:

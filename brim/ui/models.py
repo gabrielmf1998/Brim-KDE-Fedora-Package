@@ -165,7 +165,7 @@ class PackageModel(QAbstractTableModel):
         sources: set[str],
         status: str,
         extra: list[Package] | None = None,
-    ) -> int:
+    ) -> dict[str, int]:
         """Rebuild the visible rows. `extra` carries live network results."""
         needle = text.strip().lower()
         pool = self._all if not extra else self._all + extra
@@ -201,4 +201,11 @@ class PackageModel(QAbstractTableModel):
         self.beginResetModel()
         self._rows = rows
         self.endResetModel()
-        return len(rows)
+
+        # Per source tally of what is actually on screen right now, which is
+        # what the chips report. A count that ignores the current filter just
+        # confuses people mid search.
+        counts: dict[str, int] = {"_total": len(rows)}
+        for pkg in rows:
+            counts[pkg.source] = counts.get(pkg.source, 0) + 1
+        return counts

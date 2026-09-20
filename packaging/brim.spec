@@ -2,7 +2,7 @@
 %global appdir  %{_prefix}/lib/%{appname}
 
 Name:           brim
-Version:        1.0.3
+Version:        1.0.4
 Release:        1%{?dist}
 Summary:        Unified package manager for Fedora: DNF, Flatpak, COPR and AppImage in one window
 
@@ -74,6 +74,18 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{appname}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{appname}.svg
 
 %changelog
+* Sun Sep 20 2026 kxinha <gabriel17166@gmail.com> - 1.0.4-1
+- Show a progress bar and a per source report while searching, so it is
+  obvious which sources were reached and when the search finished
+- Source chips now count what is on screen rather than the catalogue, and
+  say "off" instead of zero when a source is not being searched
+- Status filters carry their own counts
+- Table columns are resizable, movable and can be hidden from a right click
+  on the header, and the layout is remembered
+- Switching a source back on reloads it instead of sitting at zero
+- Sources page lists every source, groups COPR projects under COPR, and
+  explains that searching COPR needs no setup
+
 * Sat Sep 19 2026 kxinha <gabriel17166@gmail.com> - 1.0.3-1
 - Show the resolved dependency list, sizes and reasons before a transaction
 - Package detail now carries build date, install date, packager, source RPM,
