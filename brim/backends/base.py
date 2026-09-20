@@ -59,6 +59,42 @@ class Package:
 
 
 @dataclass(slots=True)
+class PreviewItem:
+    name: str
+    version: str
+    size: int = 0
+    origin: str = ""
+    wanted: bool = False   # asked for directly, rather than pulled in
+    weak: bool = False     # a recommends, not a hard requirement
+
+
+@dataclass(slots=True)
+class Preview:
+    """What a transaction would actually do, resolved before anything runs."""
+
+    install: list = field(default_factory=list)
+    upgrade: list = field(default_factory=list)
+    remove: list = field(default_factory=list)
+    download_size: int = 0
+    problems: list = field(default_factory=list)
+
+    @property
+    def extra_count(self) -> int:
+        """Packages coming along that the user did not name."""
+        return sum(
+            1 for i in self.install + self.upgrade + self.remove if not i.wanted
+        )
+
+    @property
+    def total(self) -> int:
+        return len(self.install) + len(self.upgrade) + len(self.remove)
+
+    @property
+    def empty(self) -> bool:
+        return self.total == 0 and not self.problems
+
+
+@dataclass(slots=True)
 class Source:
     """A place packages come from: a dnf repo, a flatpak remote, a copr project."""
 
@@ -106,6 +142,22 @@ class Backend(ABC):
         Cheap enough to run on every keystroke, unlike `search_remote`.
         """
         return []
+
+    def details(self, pkg: Package) -> dict:
+        """Extra metadata fetched only when a package is actually selected.
+
+        Loading this for every package up front would cost seconds; for one
+        selected row it costs nothing.
+        """
+        return {}
+
+    def preview(self, action: str, pkgs: list[Package]) -> "Preview | None":
+        """Resolve what a transaction would do, without running it.
+
+        None means this backend cannot tell in advance, and the UI simply
+        does not show a preview rather than inventing one.
+        """
+        return None
 
     def sources(self) -> list[Source]:
         return []

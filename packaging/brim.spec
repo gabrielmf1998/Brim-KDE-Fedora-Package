@@ -2,7 +2,7 @@
 %global appdir  %{_prefix}/lib/%{appname}
 
 Name:           brim
-Version:        1.0.2
+Version:        1.0.3
 Release:        1%{?dist}
 Summary:        Unified package manager for Fedora: DNF, Flatpak, COPR and AppImage in one window
 
@@ -74,6 +74,15 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{appname}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{appname}.svg
 
 %changelog
+* Sat Sep 19 2026 kxinha <gabriel17166@gmail.com> - 1.0.3-1
+- Show the resolved dependency list, sizes and reasons before a transaction
+- Package detail now carries build date, install date, packager, source RPM,
+  requirements and recent changelog
+- Check hand installed RPMs against their upstream releases, verifying each
+  one locally before installing and never touching kernel modules or
+  anything held back by excludepkgs
+- Fix two crashes on exit caused by workers outliving the application
+
 * Sat Sep 19 2026 kxinha <gabriel17166@gmail.com> - 1.0.2-1
 - AppImage self update lands under the new version's file name and follows
   the launcher symlink and desktop entry over to it

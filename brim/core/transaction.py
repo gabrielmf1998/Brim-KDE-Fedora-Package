@@ -79,6 +79,10 @@ class TransactionRunner(QThread):
             try:
                 if source == "appimage":
                     ok = self._run_appimage(backend, pkgs)
+                elif self.action == Action.UPGRADE and any(
+                    p.extra.get("sideload") for p in pkgs
+                ):
+                    ok = self._run_sideload(backend, pkgs)
                 else:
                     ok = self._run_command(backend, pkgs)
             except Exception as exc:
@@ -132,6 +136,104 @@ class TransactionRunner(QThread):
         elif code != 0:
             self.line.emit(f"exited with status {code}")
         return code == 0
+
+    def _run_sideload(self, backend: Backend, pkgs: list[Package]) -> bool:
+        """Update a hand installed RPM from its upstream release.
+
+        Downloaded first, resolved second, installed only if that came back
+        clean. An upstream build that wants to remove half the system gets
+        reported rather than run.
+        """
+        cache = Path.home() / ".cache/brim/sideload"
+        cache.mkdir(parents=True, exist_ok=True)
+        plain = [p for p in pkgs if not p.extra.get("sideload")]
+        side = [p for p in pkgs if p.extra.get("sideload")]
+
+        ok = True
+        files: list[str] = []
+        for pkg in side:
+            info = pkg.extra["sideload"]
+            self.line.emit(
+                f"{pkg.name}: {pkg.installed_version} to {pkg.version} "
+                f"from {info['forge']}"
+            )
+            target = cache / info["rpm_name"]
+            try:
+                self._download(info["rpm_url"], target)
+            except Exception as exc:
+                self.line.emit(f"  download failed: {exc}")
+                ok = False
+                continue
+
+            self.line.emit(f"  verifying {target.name} before touching anything")
+            preview = backend.verify_local_rpm(str(target))
+            if preview.problems:
+                for problem in preview.problems:
+                    self.line.emit(f"  REFUSED: {problem}")
+                self.line.emit(
+                    "  Skipping this one. Nothing was installed for it."
+                )
+                target.unlink(missing_ok=True)
+                ok = False
+                continue
+
+            changes = preview.install + preview.upgrade
+            self.line.emit(
+                "  clean: "
+                + ", ".join(f"{i.name} {i.version}" for i in changes[:6])
+            )
+            files.append(str(target))
+
+        if files:
+            cmd = ["dnf", "install", "-y", *files]
+            if os.geteuid() != 0:
+                cmd = ["pkexec", *cmd]
+            ok = self._stream(cmd) and ok
+            for path in files:
+                Path(path).unlink(missing_ok=True)
+
+        if plain:
+            ok = self._run_command(backend, plain) and ok
+        return ok
+
+    def _download(self, url: str, dest: Path) -> None:
+        req = urllib.request.Request(url, headers=UA)
+        part = dest.with_suffix(dest.suffix + ".part")
+        with urllib.request.urlopen(req, timeout=120) as response:
+            size = int(response.headers.get("Content-Length") or 0)
+            done = mark = 0
+            with open(part, "wb") as handle:
+                while True:
+                    if self._cancelled:
+                        part.unlink(missing_ok=True)
+                        raise RuntimeError("cancelled")
+                    chunk = response.read(262144)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    done += len(chunk)
+                    if size:
+                        pct = int(done / size * 100)
+                        if pct >= mark + 25:
+                            mark = pct
+                            self.line.emit(f"  {pct}%  {done // 1048576} MiB")
+        part.replace(dest)
+
+    def _stream(self, cmd: list[str]) -> bool:
+        self.line.emit(f"$ {' '.join(cmd)}")
+        env = dict(os.environ, LC_ALL="C.UTF-8")
+        self._proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+        )
+        assert self._proc.stdout is not None
+        for raw in self._proc.stdout:
+            if self._cancelled:
+                break
+            text = raw.rstrip()
+            if text:
+                self.line.emit(text)
+        return self._proc.wait() == 0
 
     def _run_appimage(self, backend: Backend, pkgs: list[Package]) -> bool:
         assert isinstance(backend, AppImageBackend)

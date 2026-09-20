@@ -72,7 +72,10 @@ if [ -n "$missing" ]; then
       "one your system uses. That is why it cannot be bundled here."
 fi
 
-exec python3 -c 'import sys; from brim.app import main; sys.exit(main())' "$@"
+# -P keeps the current directory off sys.path. Without it, launching the
+# AppImage from a directory that happens to hold a brim package imports that
+# one instead of the bundled copy. PYTHONPATH above is still honoured.
+exec python3 -P -c 'import sys; from brim.app import main; sys.exit(main())' "$@"
 RUNEOF
 chmod +x "$APPDIR/AppRun"
 

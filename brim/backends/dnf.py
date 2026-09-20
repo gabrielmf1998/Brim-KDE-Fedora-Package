@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import libdnf5
 
-from .base import Backend, Package, Source, State
+from .base import Backend, Package, Preview, PreviewItem, Source, State
 
 # Source RPMs are never installed as ordinary packages, so they are noise here.
 SRC_ARCHES = frozenset({"src", "nosrc"})
@@ -203,6 +203,192 @@ class DnfBackend(Backend):
                 )
             )
         return out
+
+    def excludes(self) -> list[str]:
+        """Whatever excludepkgs holds back, read straight from the config."""
+        base = self._base or self._fresh_base(load_available=False)
+        try:
+            return list(base.get_config().get_excludepkgs_option().get_value())
+        except Exception:
+            return []
+
+    def verify_local_rpm(self, path: str) -> Preview:
+        """Resolve a downloaded RPM before it is allowed anywhere near rpm.
+
+        This is what stops an upstream build from quietly breaking the system:
+        if it conflicts, downgrades something, or cannot satisfy a dependency,
+        that shows up here instead of halfway through a transaction.
+        """
+        try:
+            base = self._fresh_base()
+            goal = libdnf5.base.Goal(base)
+            goal.add_install(path)
+            transaction = goal.resolve()
+
+            preview = Preview()
+            for problem in transaction.get_resolve_logs_as_strings():
+                text = str(problem).strip()
+                if text:
+                    preview.problems.append(text)
+
+            ta = libdnf5.base.transaction
+            buckets = {
+                ta.TransactionItemAction_INSTALL: preview.install,
+                ta.TransactionItemAction_REINSTALL: preview.install,
+                ta.TransactionItemAction_UPGRADE: preview.upgrade,
+                ta.TransactionItemAction_DOWNGRADE: preview.upgrade,
+                ta.TransactionItemAction_REMOVE: preview.remove,
+            }
+            for item in transaction.get_transaction_packages():
+                bucket = buckets.get(item.get_action())
+                if bucket is None:
+                    continue
+                pkg = item.get_package()
+                bucket.append(
+                    PreviewItem(
+                        name=pkg.get_name(),
+                        version=pkg.get_evr(),
+                        size=pkg.get_download_size(),
+                        origin=pkg.get_repo_id() or "local file",
+                        wanted=False,
+                        weak=False,
+                    )
+                )
+
+            # A sideloaded update that wants to remove things is a red flag.
+            if preview.remove:
+                names = ", ".join(i.name for i in preview.remove[:6])
+                preview.problems.append(
+                    f"This would remove {len(preview.remove)} installed package(s): {names}"
+                )
+            return preview
+        except Exception as exc:
+            return Preview(problems=[f"Could not verify this package: {exc}"])
+
+    def details(self, pkg: Package) -> dict:
+        """Build date, install date, packager, dependencies, changelog."""
+        base = self._base
+        if base is None:
+            return {}
+        try:
+            q = libdnf5.rpm.PackageQuery(base)
+            q.filter_name([pkg.name])
+            if pkg.arch:
+                q.filter_arch([pkg.arch])
+            if pkg.installed:
+                q.filter_installed()
+            q.filter_latest_evr(1)
+            found = list(q)
+            if not found:
+                return {}
+            p = found[0]
+
+            def names(reldeps, limit=40):
+                out, seen = [], set()
+                for dep in reldeps:
+                    text = str(dep)
+                    # Keep the capability name, drop version and flags noise.
+                    head = text.split(" ")[0].split("(")[0]
+                    if head.startswith("/") or not head or head in seen:
+                        continue
+                    seen.add(head)
+                    out.append(head)
+                    if len(out) >= limit:
+                        break
+                return out
+
+            info: dict = {
+                "build_time": p.get_build_time() or 0,
+                "packager": p.get_packager() or "",
+                "vendor": p.get_vendor() or "",
+                "source_rpm": p.get_sourcerpm() or "",
+                "group": p.get_group() or "",
+                "requires": names(p.get_regular_requires()),
+                "recommends": names(p.get_recommends(), 20),
+                "conflicts": names(p.get_conflicts(), 20),
+                "install_size": p.get_install_size(),
+            }
+            if pkg.installed:
+                info["install_time"] = p.get_install_time() or 0
+                info["reason"] = str(p.get_reason())
+
+            changelogs = list(p.get_changelogs())[:3]
+            info["changelog"] = [
+                {
+                    "author": c.get_author(),
+                    "timestamp": c.get_timestamp(),
+                    "text": c.get_text(),
+                }
+                for c in changelogs
+            ]
+            return info
+        except Exception:
+            return {}
+
+    def preview(self, action: str, pkgs: list[Package]) -> Preview | None:
+        """Ask libdnf5 to resolve the transaction and report what it found.
+
+        This is the answer to the question everyone actually has before
+        clicking install: what else is coming along, and how big is it.
+        """
+        if not pkgs:
+            return None
+        try:
+            base = self._fresh_base()
+            goal = libdnf5.base.Goal(base)
+            wanted = set()
+            for pkg in pkgs:
+                spec = self._spec(pkg)
+                wanted.add(pkg.name)
+                if action == "remove":
+                    goal.add_remove(spec)
+                elif action == "upgrade":
+                    goal.add_upgrade(spec)
+                else:
+                    goal.add_install(spec)
+
+            transaction = goal.resolve()
+            preview = Preview()
+
+            for problem in transaction.get_resolve_logs_as_strings():
+                text = str(problem).strip()
+                if text:
+                    preview.problems.append(text)
+
+            ta = libdnf5.base.transaction
+            reason_weak = ta.TransactionItemReason_WEAK_DEPENDENCY
+            buckets = {
+                ta.TransactionItemAction_INSTALL: preview.install,
+                ta.TransactionItemAction_REINSTALL: preview.install,
+                ta.TransactionItemAction_UPGRADE: preview.upgrade,
+                ta.TransactionItemAction_DOWNGRADE: preview.upgrade,
+                ta.TransactionItemAction_REMOVE: preview.remove,
+            }
+
+            for item in transaction.get_transaction_packages():
+                bucket = buckets.get(item.get_action())
+                if bucket is None:
+                    continue
+                pkg = item.get_package()
+                size = pkg.get_download_size()
+                bucket.append(
+                    PreviewItem(
+                        name=pkg.get_name(),
+                        version=pkg.get_evr(),
+                        size=size,
+                        origin=pkg.get_repo_id() or "",
+                        wanted=pkg.get_name() in wanted,
+                        weak=item.get_reason() == reason_weak,
+                    )
+                )
+                if bucket is not preview.remove:
+                    preview.download_size += size
+
+            for bucket in (preview.install, preview.upgrade, preview.remove):
+                bucket.sort(key=lambda i: (not i.wanted, i.name.lower()))
+            return preview
+        except Exception as exc:
+            return Preview(problems=[f"Could not resolve: {exc}"])
 
     def sources(self) -> list[Source]:
         base = self._base or self._fresh_base(load_available=False)

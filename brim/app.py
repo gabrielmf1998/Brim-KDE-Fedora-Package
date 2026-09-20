@@ -16,6 +16,7 @@ from .backends.flatpak import FlatpakBackend
 from .core.catalog import Catalog
 from .core.config import Config
 from .ui.main_window import MainWindow
+from .ui.threads import any_running, exit_now, stop_registered
 from .ui.tray import Tray
 
 
@@ -88,4 +89,17 @@ def main(argv: list[str] | None = None) -> int:
     if config.get("self_update_mode") in ("startup", "interval"):
         QTimer.singleShot(4500, lambda: window.settings.check_self_update(silent=True))
 
-    return app.exec()
+    def shutdown() -> None:
+        window.shutdown()
+        # Catches workers owned by dialogs, which the window cannot see.
+        stop_registered()
+
+    app.aboutToQuit.connect(shutdown)
+    code = app.exec()
+
+    # If a worker is still stuck inside a C call, letting Qt tear down would
+    # abort on ~QThread. Exiting directly is the safe way out; every setting
+    # was already written when it changed.
+    if any_running():
+        exit_now(code)
+    return code

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -17,6 +19,47 @@ from PySide6.QtWidgets import (
 
 from ..backends.base import Package, State
 from . import theme
+from .threads import Worker, stop_thread
+
+
+def _when(stamp: int) -> str:
+    """Absolute date plus how long ago, which is what people actually read."""
+    if not stamp:
+        return ""
+    moment = datetime.fromtimestamp(stamp)
+    days = (datetime.now() - moment).days
+    if days < 0:
+        ago = ""
+    elif days == 0:
+        ago = "today"
+    elif days == 1:
+        ago = "yesterday"
+    elif days < 30:
+        ago = f"{days} days ago"
+    elif days < 365:
+        ago = f"{days // 30} month{'s' if days // 30 > 1 else ''} ago"
+    else:
+        ago = f"{days // 365} year{'s' if days // 365 > 1 else ''} ago"
+    stamped = moment.strftime("%d %b %Y")
+    return f"{stamped} <span style='opacity:0.65'>{ago}</span>" if ago else stamped
+
+
+class DetailsLoader(Worker):
+    """Fetches the expensive metadata for one selected package."""
+
+    done = Signal(str, dict)
+
+    def __init__(self, backend, pkg) -> None:
+        super().__init__()
+        self.backend = backend
+        self.pkg = pkg
+
+    def run(self) -> None:
+        try:
+            info = self.backend.details(self.pkg)
+        except Exception:
+            info = {}
+        self.done.emit(f"{self.pkg.source}::{self.pkg.key}", info)
 
 
 class DetailsPane(QWidget):
@@ -24,9 +67,12 @@ class DetailsPane(QWidget):
     remove_requested = Signal(object)
     upgrade_requested = Signal(object)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, catalog=None, parent=None) -> None:
         super().__init__(parent)
         self._pkg: Package | None = None
+        self._catalog = catalog
+        self._loader: DetailsLoader | None = None
+        self._info: dict = {}
         self.setMinimumWidth(320)
 
         root = QVBoxLayout(self)
@@ -104,7 +150,9 @@ class DetailsPane(QWidget):
         self.title.setText(pkg.name)
         self.summary.setText(pkg.summary or "")
         self.badges.setText(self._badges(pkg))
-        self.body.setHtml(self._html(pkg))
+        self._info = {}
+        self.body.setHtml(self._html(pkg, {}))
+        self._load_details(pkg)
 
         installable = pkg.extra.get("installable", True)
         if pkg.state is State.UPGRADABLE:
@@ -119,6 +167,31 @@ class DetailsPane(QWidget):
             self.btn_primary.setIcon(theme.icon("download"))
             self.btn_primary.setEnabled(bool(installable))
         self.btn_secondary.setEnabled(pkg.installed)
+
+    def _load_details(self, pkg: Package) -> None:
+        if self._catalog is None:
+            return
+        backend = self._catalog.backends.get(pkg.source)
+        if backend is None:
+            return
+        if self._loader and self._loader.isRunning():
+            try:
+                self._loader.done.disconnect()
+            except RuntimeError:
+                pass
+            stop_thread(self._loader, grace_ms=200)
+        self._loader = DetailsLoader(backend, pkg)
+        self._loader.done.connect(self._on_details)
+        self._loader.start()
+
+    def shutdown(self) -> None:
+        stop_thread(self._loader)
+
+    def _on_details(self, key: str, info: dict) -> None:
+        if not self._pkg or key != f"{self._pkg.source}::{self._pkg.key}":
+            return
+        self._info = info
+        self.body.setHtml(self._html(self._pkg, info))
 
     @staticmethod
     def _badges(pkg: Package) -> str:
@@ -142,47 +215,106 @@ class DetailsPane(QWidget):
         return " &nbsp;&middot;&nbsp; ".join(chips)
 
     @staticmethod
-    def _html(pkg: Package) -> str:
+    def _html(pkg: Package, info: dict) -> str:
         rows = []
 
         def row(label: str, value: str) -> None:
             if value:
                 rows.append(
-                    f'<tr><td style="padding:3px 14px 3px 0;opacity:0.7;white-space:nowrap;">'
-                    f"{label}</td><td style='padding:3px 0;'>{value}</td></tr>"
+                    f'<tr><td style="padding:3px 14px 3px 0;opacity:0.7;'
+                    f'white-space:nowrap;vertical-align:top;">{label}</td>'
+                    f"<td style='padding:3px 0;'>{value}</td></tr>"
                 )
 
         if pkg.state is State.UPGRADABLE:
             up = theme.state_color("upgradable").name()
             row(
                 "Change",
-                f'{pkg.installed_version} <span style="color:{up};">to {pkg.version}</span>',
+                f'{pkg.installed_version} <span style="color:{up};font-weight:600;">'
+                f"to {pkg.version}</span>",
             )
         else:
             row("Version", pkg.version)
+
         row("Source", theme.SOURCE_LABELS.get(pkg.source, pkg.source))
         row("Origin", pkg.origin)
         if pkg.arch:
             row("Architecture", pkg.arch)
-        if pkg.size:
-            row("Size", theme.human_size(pkg.size))
+
+        built = _when(info.get("build_time", 0))
+        if built:
+            row("Built", built)
+        installed_at = _when(info.get("install_time", 0))
+        if installed_at:
+            row("Installed", installed_at)
+
+        size = info.get("install_size") or pkg.size
+        if size:
+            row("Size on disk" if pkg.installed else "Download", theme.human_size(size))
+        if info.get("packager"):
+            row("Packaged by", info["packager"])
         if pkg.license:
             row("License", pkg.license)
         if pkg.url:
             row("Homepage", f'<a href="{pkg.url}">{pkg.url}</a>')
+        if info.get("source_rpm"):
+            row("Source RPM", f"<code>{info['source_rpm']}</code>")
         if pkg.extra.get("path"):
             row("Path", pkg.extra["path"])
-        installed_versions = pkg.extra.get("installed_versions")
-        if installed_versions:
-            row(
-                "Installed",
-                f"{len(installed_versions)} versions: "
-                + ", ".join(installed_versions),
-            )
+        if pkg.extra.get("match_reason"):
+            row("Matched because it", pkg.extra["match_reason"])
 
-        table = f"<table style='border-collapse:collapse;'>{''.join(rows)}</table>"
+        versions = pkg.extra.get("installed_versions")
+        if versions:
+            row("Installed versions", f"{len(versions)}: " + ", ".join(versions))
+
+        html = f"<table style='border-collapse:collapse;'>{''.join(rows)}</table>"
+
         desc = (pkg.description or "").strip()
         if desc:
             safe = desc.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-            table += f"<p style='margin-top:14px;'>{safe}</p>"
-        return table
+            html += f"<p style='margin-top:14px;'>{safe}</p>"
+
+        requires = info.get("requires") or []
+        recommends = info.get("recommends") or []
+        if requires or recommends:
+            html += "<p style='margin-top:16px;opacity:0.7;'><b>Needs</b></p>"
+            if requires:
+                shown = ", ".join(f"<code>{r}</code>" for r in requires[:24])
+                more = (
+                    f" <span style='opacity:0.6'>and {len(requires) - 24} more</span>"
+                    if len(requires) > 24
+                    else ""
+                )
+                html += f"<p style='margin:2px 0;'>{shown}{more}</p>"
+            if recommends:
+                shown = ", ".join(f"<code>{r}</code>" for r in recommends[:12])
+                html += (
+                    "<p style='margin:6px 0 0 0;opacity:0.75;'>"
+                    f"Suggested alongside: {shown}</p>"
+                )
+            html += (
+                "<p style='margin:6px 0 0 0;opacity:0.6;'>"
+                "Anything missing is pulled in automatically. Brim shows you the "
+                "full list before it runs.</p>"
+            )
+
+        changelog = info.get("changelog") or []
+        if changelog:
+            html += "<p style='margin-top:16px;opacity:0.7;'><b>Recent changes</b></p>"
+            for entry in changelog:
+                when = _when(entry.get("timestamp", 0))
+                author = (entry.get("author") or "").split("<")[0].strip()
+                text = (entry.get("text") or "").strip()
+                text = (
+                    text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                )
+                if len(text) > 420:
+                    text = text[:420] + "..."
+                text = text.replace(chr(10), "<br>")
+                html += (
+                    "<p style='margin:8px 0 0 0;'>"
+                    f"<span style='opacity:0.65;'>{when} &middot; {author}</span><br>"
+                    f"<span style='font-size:small;'>{text}</span></p>"
+                )
+        return html

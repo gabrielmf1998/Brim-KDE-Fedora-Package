@@ -24,6 +24,9 @@ DEFAULTS: dict = {
     "self_update_interval_hours": 24,
     "self_update_notify": True,
     "confirm_transactions": True,
+    # Hand installed RPMs have no repo watching them, so Brim checks upstream.
+    "check_sideloaded": True,
+    "sideload_map": {},
 }
 
 SELF_UPDATE_MODES = [

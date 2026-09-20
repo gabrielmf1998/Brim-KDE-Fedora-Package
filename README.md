@@ -3,8 +3,52 @@
 One package manager for every source Fedora can pull from.
 
 Brim searches DNF, Flatpak, COPR and AppImage in a single box, shows you what
-is installed and what changes, and applies it. Built with PySide6 and libdnf5,
-themed by Breeze, and it updates itself from git.
+is installed and exactly what will change, and applies it. Built with PySide6
+and libdnf5, themed by Breeze, and it keeps itself up to date.
+
+![Brim browsing packages](docs/screenshots/browse-dark.png)
+
+<details>
+<summary>The same window in Breeze Light</summary>
+
+![Brim in Breeze Light](docs/screenshots/browse-light.png)
+
+</details>
+
+### See what a transaction will actually do
+
+No guessing about dependencies. Brim resolves the transaction first and lists
+every package coming along, with its size and why it is there.
+
+![Transaction preview](docs/screenshots/preview-dark.png)
+
+### Every source in one place
+
+![Sources](docs/screenshots/sources-dark.png)
+
+### Honest about what community sources cost you
+
+![Help](docs/screenshots/help-dark.png)
+
+<details>
+<summary>More screenshots</summary>
+
+**Updates, from every source at once**
+
+![Updates](docs/screenshots/updates-dark.png)
+
+**Settings**
+
+![Settings](docs/screenshots/settings-dark.png)
+
+**Breeze Light**
+
+| | |
+| --- | --- |
+| ![Sources light](docs/screenshots/sources-light.png) | ![Help light](docs/screenshots/help-light.png) |
+| ![Preview light](docs/screenshots/preview-light.png) | ![Settings light](docs/screenshots/settings-light.png) |
+
+</details>
 
 ## Why
 
@@ -19,6 +63,7 @@ AppImages. Brim covers all four in one window.
 | Flatpak | All remotes, user and system, with real descriptions and sizes |
 | COPR | Searches every public project, not just the ones already enabled |
 | AppImage | Searches the AppImageHub catalog, downloads and wires up a launcher |
+| Hand installed RPMs | Checks upstream releases for packages no repository watches |
 
 ## Speed
 
@@ -94,6 +139,21 @@ list, so you always know what a transaction will actually do.
 
 **Sources.** Enable or disable any dnf repo, add a COPR, add a Flatpak remote,
 or install RPM Fusion in one click. Disabled repos are hidden until you ask.
+
+**Dependencies, up front.** Yes, it pulls them. More to the point it shows you
+which ones before anything runs: the full resolved list, each package's size,
+and whether it is a hard requirement or an optional extra. If the transaction
+cannot be resolved, you see why instead of a failure halfway through.
+
+**Real package detail.** When it was built, when you installed it, who packaged
+it, the source RPM, what it needs, what it suggests, and its recent changelog.
+
+**Packages you installed by hand.** An RPM you installed from a downloaded file
+has no repository behind it, so dnf will never offer it an update; it just sits
+there getting older. Brim reads the project page recorded in the package,
+checks upstream for a newer build, and resolves it locally before installing,
+so an update that would break something is refused rather than run. Kernel
+modules and anything held back by `excludepkgs` are never touched.
 
 **Transactions.** Everything touching RPM goes through `pkexec`, so you get the
 normal polkit prompt and the real dnf output streamed live. Your `dnf.conf`

@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -55,6 +56,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_sources())
         layout.addWidget(self._build_window())
         layout.addWidget(self._build_updates())
+        layout.addWidget(self._build_sideload())
         layout.addWidget(self._build_self_update())
         layout.addStretch(1)
 
@@ -157,6 +159,56 @@ class SettingsPage(QWidget):
 
     def _toggle_auto_apply(self, value: bool) -> None:
         self.config.set("auto_apply_updates", value)
+
+    def _build_sideload(self) -> QGroupBox:
+        box = QGroupBox("Packages you installed by hand")
+        layout = QVBoxLayout(box)
+
+        blurb = QLabel(
+            "An RPM you installed from a downloaded file has no repository "
+            "behind it, so dnf will never offer it an update. Brim can read the "
+            "project page recorded in the package and check upstream for a newer "
+            "build, then resolve it before installing so a bad one is refused "
+            "rather than run."
+        )
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet("opacity: 0.8;")
+        layout.addWidget(blurb)
+
+        self.chk_sideload = QCheckBox("Check them against their project releases")
+        self.chk_sideload.setChecked(self.config.get("check_sideloaded"))
+        self.chk_sideload.toggled.connect(
+            lambda v: self.config.set("check_sideloaded", v)
+        )
+        layout.addWidget(self.chk_sideload)
+
+        guard = QLabel(
+            "Kernel modules and anything held back by excludepkgs in your "
+            "dnf.conf are never touched here."
+        )
+        guard.setWordWrap(True)
+        guard.setStyleSheet("opacity: 0.65;")
+        layout.addWidget(guard)
+
+        row = QHBoxLayout()
+        self.btn_map = QPushButton("Point packages at a repository")
+        self.btn_map.setIcon(theme.icon("bookmarks"))
+        self.btn_map.clicked.connect(self._edit_map)
+        row.addWidget(self.btn_map)
+        row.addStretch(1)
+        layout.addLayout(row)
+        return box
+
+    def _edit_map(self) -> None:
+        from .sideload_dialog import SideloadMapDialog
+
+        window = self.window()
+        skipped = getattr(window, "sideload_skipped", {}) or {}
+        dialog = SideloadMapDialog(
+            dict(self.config.get("sideload_map") or {}), skipped, self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.config.set("sideload_map", dialog.mapping())
 
     def _build_self_update(self) -> QGroupBox:
         box = QGroupBox("Brim itself")

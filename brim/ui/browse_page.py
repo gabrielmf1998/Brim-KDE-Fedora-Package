@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..backends.base import Package
 from . import theme
+from .threads import Worker, stop_all
 from .details import DetailsPane
 from .models import COL_CHECK, COL_NAME, COL_ORIGIN, COL_SIZE, PackageModel
 
@@ -32,7 +33,7 @@ STATUSES = [
 ]
 
 
-class DeepSearch(QThread):
+class DeepSearch(Worker):
     """Local index lookups: binaries, provided libraries, descriptions."""
 
     done = Signal(str, list)
@@ -51,7 +52,7 @@ class DeepSearch(QThread):
         self.done.emit(self.query, found)
 
 
-class RemoteSearch(QThread):
+class RemoteSearch(Worker):
     """Queries the network catalogs without blocking typing."""
 
     done = Signal(str, list)
@@ -146,7 +147,7 @@ class BrowsePage(QWidget):
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self._build_table())
-        self.details = DetailsPane()
+        self.details = DetailsPane(self.catalog)
         self.splitter.addWidget(self.details)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
@@ -440,6 +441,11 @@ class BrowsePage(QWidget):
         self.btn_install.setEnabled(bool(to_install))
         self.btn_remove.setEnabled(bool(to_remove))
         self.selection_changed.emit(count)
+
+    def shutdown(self) -> None:
+        """Called before the window goes away."""
+        stop_all(self._deep_thread, self._search_thread)
+        self.details.shutdown()
 
     def clear_selection(self) -> None:
         self.model.clear_checks()

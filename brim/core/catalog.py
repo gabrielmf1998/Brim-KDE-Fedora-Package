@@ -85,6 +85,46 @@ class Catalog:
                 self.errors[b.id] = str(exc)
         return out
 
+    def check_sideload(self, user_map: dict, excludes: list) -> tuple[int, dict]:
+        """Mark hand installed RPMs that have a newer build upstream.
+
+        These carry no repository, so dnf will never offer them anything.
+        Rather than inventing a parallel package list, the existing installed
+        entry is promoted to upgradable and told where the new build lives.
+        """
+        from .sideload import SideloadChecker
+
+        checker = SideloadChecker(user_map, excludes)
+        try:
+            found = checker.check(self.packages)
+        except Exception as exc:
+            self.errors["sideload"] = str(exc)
+            return 0, {}
+
+        by_name = {
+            p.name: p
+            for p in self.packages
+            if p.source == "dnf" and p.installed
+        }
+        marked = 0
+        for upstream in found:
+            pkg = by_name.get(upstream.name)
+            if pkg is None:
+                continue
+            pkg.state = State.UPGRADABLE
+            pkg.installed_version = upstream.installed_version
+            pkg.version = upstream.new_version
+            pkg.origin = f"upstream, {upstream.forge}"
+            pkg.extra = dict(pkg.extra)
+            pkg.extra["sideload"] = {
+                "rpm_url": upstream.rpm_url,
+                "rpm_name": upstream.rpm_name,
+                "release_url": upstream.release_url,
+                "forge": upstream.forge,
+            }
+            marked += 1
+        return marked, dict(checker.skipped)
+
     def upgradable(self) -> list[Package]:
         return [p for p in self.packages if p.state is State.UPGRADABLE]
 

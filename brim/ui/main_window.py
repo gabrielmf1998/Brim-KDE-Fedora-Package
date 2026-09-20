@@ -6,6 +6,7 @@ from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -21,13 +22,15 @@ from . import theme
 from .browse_page import BrowsePage
 from .help_page import HelpPage
 from .output_dialog import OutputDialog
+from .preview_dialog import PreviewDialog
+from .threads import Worker, stop_all
 from .settings_page import SettingsPage
 from .sources_page import SourcesPage
 
 PAGE_BROWSE, PAGE_SOURCES, PAGE_SETTINGS, PAGE_HELP = range(4)
 
 
-class CatalogLoader(QThread):
+class CatalogLoader(Worker):
     done = Signal(list, dict)
 
     def __init__(self, catalog, enabled: set[str]) -> None:
@@ -40,6 +43,25 @@ class CatalogLoader(QThread):
         self.done.emit(packages, dict(self.catalog.errors))
 
 
+class SideloadCheck(Worker):
+    """Asks upstream about the RPMs that no repository is watching."""
+
+    done = Signal(int, dict)
+
+    def __init__(self, catalog, user_map: dict, excludes: list) -> None:
+        super().__init__()
+        self.catalog = catalog
+        self.user_map = user_map
+        self.excludes = excludes
+
+    def run(self) -> None:
+        try:
+            marked, skipped = self.catalog.check_sideload(self.user_map, self.excludes)
+        except Exception:
+            marked, skipped = 0, {}
+        self.done.emit(marked, skipped)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, catalog, config) -> None:
         super().__init__()
@@ -47,7 +69,9 @@ class MainWindow(QMainWindow):
         self.config = config
         self.tray = None
         self._loader: CatalogLoader | None = None
+        self._sideload: SideloadCheck | None = None
         self._runner = None
+        self.sideload_skipped: dict = {}
 
         self.setWindowTitle("Brim")
         self.setWindowIcon(theme.icon("brim", "system-software-install"))
@@ -245,6 +269,48 @@ class MainWindow(QMainWindow):
         if quiet and count and self.config.get("auto_apply_updates"):
             self.apply_all_updates(unattended=True)
 
+        if self.config.get("check_sideloaded"):
+            self._start_sideload_check(quiet)
+
+    def _start_sideload_check(self, quiet: bool) -> None:
+        if self._sideload and self._sideload.isRunning():
+            return
+        backend = self.catalog.backends.get("dnf")
+        if backend is None:
+            return
+        try:
+            excludes = backend.excludes()
+        except Exception:
+            excludes = []
+        self._sideload = SideloadCheck(
+            self.catalog, dict(self.config.get("sideload_map") or {}), excludes
+        )
+        self._sideload.done.connect(lambda n, s: self._on_sideload(n, s, quiet))
+        self._sideload.start()
+
+    def _on_sideload(self, marked: int, skipped: dict, quiet: bool) -> None:
+        self.sideload_skipped = skipped
+        if not marked:
+            return
+
+        self.browse.set_packages(self.catalog.packages)
+        count = len(self.catalog.upgradable())
+        self.act_apply_all.setEnabled(bool(count))
+        self.update_label.setText(f"{count} update{'s' if count != 1 else ''}")
+        self.update_label.setStyleSheet(
+            f"color: {theme.state_color('upgradable').name()}; font-weight: 600;"
+        )
+        plural = "s" if marked != 1 else ""
+        self.status.showMessage(
+            f"{marked} hand installed package{plural} has a newer build upstream. "
+            "No repository was watching them.",
+            18000,
+        )
+        if self.tray:
+            self.tray.set_update_count(count)
+            if quiet and self.config.get("notify_updates"):
+                self.tray.notify_updates(count)
+
     def _on_backends_changed(self) -> None:
         for bid, chip in self.browse.chips.items():
             chip.blockSignals(True)
@@ -301,62 +367,12 @@ class MainWindow(QMainWindow):
         self.reload()
 
     def _confirm(self, action: str, packages: list[Package]) -> bool:
-        names = "\n".join(
-            f"  {p.name}  ({theme.SOURCE_LABELS.get(p.source, p.source)})"
-            for p in packages[:14]
-        )
-        if len(packages) > 14:
-            names += f"\n  and {len(packages) - 14} more"
-
-        box = QMessageBox(self)
-        box.setWindowTitle(f"{action.title()} {len(packages)} package(s)")
-        box.setIcon(
-            QMessageBox.Icon.Warning
-            if action == Action.REMOVE
-            else QMessageBox.Icon.Question
-        )
-        box.setText(f"{action.title()} the following?")
-        box.setInformativeText(names)
-
-        notes: list[str] = []
-        if any(self.catalog.backends[p.source].needs_root for p in packages):
-            notes.append(
-                "Anything from DNF or COPR runs through pkexec, so you will be "
-                "asked to authenticate. Your dnf.conf rules, excludepkgs "
-                "included, still apply."
-            )
-
-        if action == Action.INSTALL:
-            coprs = sorted({p.origin for p in packages if p.source == "copr"})
-            if coprs:
-                box.setIcon(QMessageBox.Icon.Warning)
-                box.setInformativeText(
-                    names
-                    + "\n\nThis enables a community repository: "
-                    + ", ".join(coprs)
-                    + "\nCOPR builds are not reviewed by Fedora."
-                )
-                notes.append(
-                    "COPR is Fedora's community build service. Anyone can publish "
-                    "there. Nobody reviews the code or the packaging, security "
-                    "updates arrive only if the owner keeps maintaining it, and a "
-                    "COPR package can conflict with official ones. Check the "
-                    "project page before trusting it. See Help for the full "
-                    "picture."
-                )
-            if any(p.source == "appimage" for p in packages):
-                notes.append(
-                    "AppImages come straight from upstream with no distribution "
-                    "in between and no sandbox. They are not reviewed by anyone."
-                )
-
-        if notes:
-            box.setDetailedText("\n\n".join(notes))
-        box.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
-        )
-        box.setDefaultButton(QMessageBox.StandardButton.Yes)
-        return box.exec() == QMessageBox.StandardButton.Yes
+        dialog = PreviewDialog(action, packages, self.catalog, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        if accepted and dialog.skip_future():
+            self.config.set("confirm_transactions", False)
+            self.settings.chk_confirm.setChecked(False)
+        return accepted
 
     def apply_all_updates(self, unattended: bool = False) -> None:
         updates = self.catalog.upgradable()
@@ -378,6 +394,17 @@ class MainWindow(QMainWindow):
 
     # lifecycle
 
+    def shutdown(self) -> None:
+        """Stop every worker before Qt tears the window down."""
+        self.browse.shutdown()
+        stop_all(
+            self._loader,
+            self._sideload,
+            self._runner,
+            getattr(self.settings, "_check_thread", None),
+            getattr(self.settings, "_apply_thread", None),
+        )
+
     def closeEvent(self, event) -> None:
         if self.tray and self.config.get("close_to_tray") and self.tray.isVisible():
             event.ignore()
@@ -389,10 +416,12 @@ class MainWindow(QMainWindow):
                 4000,
             )
             return
+        self.shutdown()
         event.accept()
         QApplication.quit()
 
     def _really_quit(self) -> None:
+        self.shutdown()
         if self.tray:
             self.tray.hide()
         QApplication.quit()
