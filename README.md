@@ -30,16 +30,58 @@ libdnf5 is read directly instead of through a daemon.
 
 ## Install
 
-No root needed. Nothing lands outside your home directory.
+One line. It picks the right method for your machine.
 
 ```sh
-git clone <your remote> ~/Documents/brim
-cd ~/Documents/brim
-./install.sh
-brim
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash
 ```
 
-`uninstall.sh` reverses it.
+Piping a script into a shell deserves a second thought, so read it first if
+you prefer:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh
+less get-brim.sh && bash get-brim.sh
+```
+
+### Or pick a method yourself
+
+**RPM**, the normal way. Integrates with dnf and updates like any package.
+
+```sh
+sudo dnf install https://github.com/gabrielmf1998/brim/releases/latest/download/brim-1.0.0-1.fc46.noarch.rpm
+```
+
+**AppImage**, one file, no root, nothing installed system wide.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash -s -- --method appimage
+```
+
+The AppImage is deliberately thin. Brim drives your package manager, so it has
+to use your system's own `python3-libdnf5`; bundling a copy would be the wrong
+version the moment dnf5 moves. It needs `python3-pyside6` and `python3-libdnf5`
+present, and the installer puts them there for you.
+
+**From source**, for hacking on it.
+
+```sh
+git clone https://github.com/gabrielmf1998/brim
+cd brim && ./install.sh && brim
+```
+
+### Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash -s -- --uninstall
+```
+
+## Fedora only, on purpose
+
+Brim links against `libdnf5` and speaks DNF5. It works on Fedora, Nobara,
+Ultramarine, RHEL 10 and other DNF5 based systems. It will not work on Debian,
+Ubuntu, Arch, openSUSE or anything that is not RPM and DNF based, and the
+installer refuses rather than half working.
 
 ## What it does
 
@@ -60,8 +102,22 @@ stays in charge: `excludepkgs` and every other rule still applies.
 **Tray.** Sits in the system tray with a badge for pending updates, checks on an
 interval you pick, and can start with your session.
 
-**Self update.** Brim tracks its own git checkout. Push a new commit, hit
-Check for updates in Settings, and it fast forwards itself.
+**Self update.** Brim knows how it was installed and updates the same way:
+it replaces the RPM through pkexec, swaps the AppImage file in place, or fast
+forwards a git checkout. Releases are read from GitHub first and GitLab
+second, so publishing to either host reaches everyone.
+
+You choose when it looks: manual only, on startup, or on a schedule you set.
+Brim never applies an update on its own.
+
+## Building the packages
+
+```sh
+./packaging/build-rpm.sh
+APPIMAGETOOL=/path/to/appimagetool ./packaging/build-appimage.sh
+```
+
+Both land in `dist/`.
 
 ## Requirements
 
@@ -70,6 +126,16 @@ Already present on a normal Fedora KDE install:
 - `python3-pyside6`
 - `python3-libdnf5`
 - `flatpak` (optional, the chip greys out without it)
+
+## Where it lives
+
+| Host | Repository |
+| --- | --- |
+| GitHub | https://github.com/gabrielmf1998/brim |
+| GitLab | https://gitlab.com/gabriel17166/brim |
+
+Both carry the same releases. Brim checks GitHub first and falls back to
+GitLab, so either one being down does not stop an update.
 
 ## Layout
 
