@@ -296,20 +296,58 @@ class UpdateApply(QThread):
         self.finished_ok.emit(True, f"Updated to {current_describe()}. Restart Brim.")
 
     def _apply_appimage(self) -> None:
-        target = appimage_path()
+        current = appimage_path()
         if not self.release or not self.release.appimage_url:
             self.finished_ok.emit(False, "That release has no AppImage attached.")
             return
-        staged = target.with_suffix(target.suffix + ".new")
+
+        # The file name carries the version, so keeping the old name would
+        # leave a 1.0.0 file holding 1.0.1. Land it under the new name and
+        # repoint everything that referred to the old one.
+        new_name = self.release.appimage_name or current.name
+        target = current.parent / new_name
+        staged = target.with_suffix(target.suffix + ".part")
+
         self._download(self.release.appimage_url, staged)
         os.chmod(staged, 0o755)
-        backup = target.with_suffix(target.suffix + ".old")
-        shutil.move(str(target), str(backup))
-        shutil.move(str(staged), str(target))
-        backup.unlink(missing_ok=True)
+
+        if target.exists():
+            target.unlink()
+        staged.replace(target)
+
+        if current != target and current.exists():
+            current.unlink()
+            self.line.emit(f"Removed {current.name}")
+
+        self._repoint(current, target)
+        self.line.emit(f"Installed {target}")
         self.finished_ok.emit(
             True, f"Updated to {self.release.version}. Restart Brim to run it."
         )
+
+    def _repoint(self, old: Path, new: Path) -> None:
+        """Follow the launcher and the desktop entry over to the new file."""
+        if old == new:
+            return
+
+        link = Path.home() / ".local/bin/brim"
+        try:
+            if link.is_symlink() and Path(os.readlink(link)) == old:
+                link.unlink()
+                link.symlink_to(new)
+                self.line.emit(f"Relinked {link}")
+        except OSError as exc:
+            self.line.emit(f"Could not update {link}: {exc}")
+
+        entry = Path.home() / ".local/share/applications/brim.desktop"
+        try:
+            if entry.exists():
+                text = entry.read_text()
+                if str(old) in text:
+                    entry.write_text(text.replace(str(old), str(new)))
+                    self.line.emit(f"Updated {entry}")
+        except OSError as exc:
+            self.line.emit(f"Could not update {entry}: {exc}")
 
     def _apply_rpm(self) -> None:
         if not self.release or not self.release.rpm_url:
