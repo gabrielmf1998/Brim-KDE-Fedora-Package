@@ -2,11 +2,11 @@
 #
 # Brim installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh | bash
 #
 # Prefer to read before you run? That is the right instinct:
 #
-#   curl -fsSLO https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh
+#   curl -fsSLO https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh
 #   less get-brim.sh && bash get-brim.sh
 #
 # Options:
@@ -16,8 +16,8 @@
 #   --help
 set -euo pipefail
 
-GITHUB_REPO="gabrielmf1998/brim"
-RAW_BASE="https://raw.githubusercontent.com/gabrielmf1998/brim/main"
+GITHUB_REPO="gabrielmf1998/Brim-KDE-Fedora-Package"
+RAW_BASE="https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main"
 GITLAB_REPO="gabriel17166/brim"
 GITLAB_ID="$(printf '%s' "$GITLAB_REPO" | sed 's|/|%2F|')"
 

@@ -2,12 +2,12 @@
 %global appdir  %{_prefix}/lib/%{appname}
 
 Name:           brim
-Version:        1.0.4
+Version:        1.0.5
 Release:        1%{?dist}
 Summary:        Unified package manager for Fedora: DNF, Flatpak, COPR and AppImage in one window
 
 License:        GPL-3.0-or-later
-URL:            https://github.com/gabrielmf1998/brim
+URL:            https://github.com/gabrielmf1998/Brim-KDE-Fedora-Package
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch
@@ -74,6 +74,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{appname}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{appname}.svg
 
 %changelog
+* Sun Sep 20 2026 kxinha <gabriel17166@gmail.com> - 1.0.5-1
+- Point every URL at the renamed GitHub repository, so the installer and the
+  self updater stop relying on a redirect
+
 * Sun Sep 20 2026 kxinha <gabriel17166@gmail.com> - 1.0.4-1
 - Show a progress bar and a per source report while searching, so it is
   obvious which sources were reached and when the search finished

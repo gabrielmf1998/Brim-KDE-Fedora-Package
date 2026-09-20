@@ -78,14 +78,14 @@ libdnf5 is read directly instead of through a daemon.
 One line. It picks the right method for your machine.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh | bash
 ```
 
 Piping a script into a shell deserves a second thought, so read it first if
 you prefer:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh
+curl -fsSLO https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh
 less get-brim.sh && bash get-brim.sh
 ```
 
@@ -94,13 +94,13 @@ less get-brim.sh && bash get-brim.sh
 **RPM**, the normal way. Integrates with dnf and updates like any package.
 
 ```sh
-sudo dnf install https://github.com/gabrielmf1998/brim/releases/latest/download/brim-1.0.0-1.fc46.noarch.rpm
+sudo dnf install https://github.com/gabrielmf1998/Brim-KDE-Fedora-Package/releases/latest/download/brim-1.0.0-1.fc46.noarch.rpm
 ```
 
 **AppImage**, one file, no root, nothing installed system wide.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash -s -- --method appimage
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh | bash -s -- --method appimage
 ```
 
 The AppImage is deliberately thin. Brim drives your package manager, so it has
@@ -111,14 +111,14 @@ present, and the installer puts them there for you.
 **From source**, for hacking on it.
 
 ```sh
-git clone https://github.com/gabrielmf1998/brim
+git clone https://github.com/gabrielmf1998/Brim-KDE-Fedora-Package
 cd brim && ./install.sh && brim
 ```
 
 ### Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/brim/main/get-brim.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/gabrielmf1998/Brim-KDE-Fedora-Package/main/get-brim.sh | bash -s -- --uninstall
 ```
 
 ## Fedora only, on purpose
@@ -191,7 +191,7 @@ Already present on a normal Fedora KDE install:
 
 | Host | Repository |
 | --- | --- |
-| GitHub | https://github.com/gabrielmf1998/brim |
+| GitHub | https://github.com/gabrielmf1998/Brim-KDE-Fedora-Package |
 | GitLab | https://gitlab.com/gabriel17166/brim |
 
 Both carry the same releases. Brim checks GitHub first and falls back to

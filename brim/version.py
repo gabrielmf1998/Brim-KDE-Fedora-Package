@@ -3,13 +3,13 @@
 The RPM spec, the AppImage build and the update checker all read this.
 """
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 APP_ID = "io.github.gabrielmf1998.brim"
 APP_NAME = "Brim"
 
 # Where releases are published. Either host can serve an update.
-GITHUB_REPO = "gabrielmf1998/brim"
+GITHUB_REPO = "gabrielmf1998/Brim-KDE-Fedora-Package"
 GITLAB_REPO = "gabriel17166/brim"
 
 GITHUB_API = "https://api.github.com"
