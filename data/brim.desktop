@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Brim
+GenericName=Package Manager
+Comment=Search, install and update from every Fedora source at once
+Exec=BRIM_EXEC %U
+Icon=brim
+Terminal=false
+Categories=System;Settings;PackageManager;Qt;
+Keywords=package;dnf;rpm;flatpak;copr;appimage;install;update;software;
+StartupNotify=true
+StartupWMClass=brim

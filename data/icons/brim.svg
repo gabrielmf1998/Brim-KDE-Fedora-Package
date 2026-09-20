@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a9fd4"/>
+      <stop offset="1" stop-color="#2d6ca8"/>
+    </linearGradient>
+    <linearGradient id="brim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3c84bd"/>
+      <stop offset="0.5" stop-color="#6cb3e8"/>
+      <stop offset="1" stop-color="#3c84bd"/>
+    </linearGradient>
+  </defs>
+  <!-- crown of the hat -->
+  <path d="M20 34 C20 18 24 12 32 12 C40 12 44 18 44 34 Z" fill="url(#crown)"/>
+  <!-- pinch -->
+  <path d="M28 16 C30 20 34 20 36 16 C34 13 30 13 28 16 Z" fill="#1f4e7a" opacity="0.55"/>
+  <!-- band -->
+  <rect x="19" y="30" width="26" height="5" rx="1.5" fill="#1f4e7a"/>
+  <!-- the brim itself -->
+  <ellipse cx="32" cy="38" rx="27" ry="8" fill="url(#brim)"/>
+  <ellipse cx="32" cy="36.5" rx="27" ry="8" fill="#7cc0f0" opacity="0.35"/>
+  <!-- three dots: the sources it pulls together -->
+  <circle cx="22" cy="49" r="3.2" fill="#5a9fd4"/>
+  <circle cx="32" cy="51" r="3.2" fill="#4caf7d"/>
+  <circle cx="42" cy="49" r="3.2" fill="#9c7cd4"/>
+</svg>
