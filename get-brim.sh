@@ -247,7 +247,7 @@ case "$METHOD" in
     say "${dim}$APPIMAGE_URL${reset}"
     mkdir -p "$APPS_DIR" "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR"
     rm -f "$APPS_DIR"/Brim-*.AppImage
-    TARGET="$APPS_DIR/Brim-${VERSION}-x86_64.AppImage"
+    TARGET="$APPS_DIR/Brim-${VERSION#v}-x86_64.AppImage"
     curl -fSL --progress-bar -o "$TARGET" "$APPIMAGE_URL"
     chmod +x "$TARGET"
     ln -sf "$TARGET" "$BIN_DIR/brim"

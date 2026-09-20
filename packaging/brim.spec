@@ -2,7 +2,7 @@
 %global appdir  %{_prefix}/lib/%{appname}
 
 Name:           brim
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        Unified package manager for Fedora: DNF, Flatpak, COPR and AppImage in one window
 
@@ -74,6 +74,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{appname}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{appname}.svg
 
 %changelog
+* Sat Sep 19 2026 kxinha <gabriel17166@gmail.com> - 1.0.1-1
+- Installer escalates with pkexec when run without a terminal, which is how
+  the documented one line install actually runs
+
 * Sat Sep 19 2026 kxinha <gabriel17166@gmail.com> - 1.0.0-1
 - First release: DNF, Flatpak, COPR and AppImage in one window
 - Universal search across names, shipped commands, provides and descriptions
