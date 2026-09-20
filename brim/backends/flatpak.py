@@ -110,9 +110,28 @@ class FlatpakBackend(Backend):
                     origin=remotes.split(",")[0] if remotes else "flathub",
                     state=State.AVAILABLE,
                     description=desc if desc != "-" else "",
+                    url=f"https://flathub.org/apps/{appid}",
+                    extra={"appid": appid},
                 )
             )
-        return out
+
+        # flatpak search matches descriptions too, which buries the real hit
+        # under themes and add ons. Rank name matches up and cap the tail.
+        low = query.lower()
+
+        def rank(pkg: Package) -> tuple:
+            name_low = pkg.name.lower()
+            app_low = pkg.key.lower()
+            return (
+                0 if name_low == low else
+                1 if name_low.startswith(low) else
+                2 if low in name_low else
+                3 if low in app_low else 4,
+                name_low,
+            )
+
+        out.sort(key=rank)
+        return out[:40]
 
     def sources(self) -> list[Source]:
         if not self.available:

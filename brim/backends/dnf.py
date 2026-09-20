@@ -12,6 +12,9 @@ import libdnf5
 
 from .base import Backend, Package, Source, State
 
+# Source RPMs are never installed as ordinary packages, so they are noise here.
+SRC_ARCHES = frozenset({"src", "nosrc"})
+
 
 class DnfBackend(Backend):
     id = "dnf"
@@ -48,6 +51,8 @@ class DnfBackend(Backend):
         q = libdnf5.rpm.PackageQuery(base)
         q.filter_installed()
         for p in q:
+            if p.get_arch() in SRC_ARCHES:
+                continue
             kt = (p.get_name(), p.get_arch())
             versions.setdefault(kt, []).append(p.get_evr())
             current = installed.get(kt)
@@ -100,6 +105,8 @@ class DnfBackend(Backend):
         qa.filter_available()
         qa.filter_latest_evr(1)
         for p in qa:
+            if p.get_arch() in SRC_ARCHES:
+                continue
             kt = (p.get_name(), p.get_arch())
             if kt in seen:
                 continue
