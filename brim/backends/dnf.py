@@ -15,6 +15,9 @@ from .base import Backend, Package, Source, State
 # Source RPMs are never installed as ordinary packages, so they are noise here.
 SRC_ARCHES = frozenset({"src", "nosrc"})
 
+# Preferred when the same name exists for several architectures.
+PRIMARY_ARCHES = frozenset({"x86_64", "noarch", "aarch64"})
+
 
 class DnfBackend(Backend):
     id = "dnf"
@@ -125,6 +128,78 @@ class DnfBackend(Backend):
                     license=p.get_license() or "",
                     url=p.get_url() or "",
                     description=p.get_description() or "",
+                )
+            )
+        return out
+
+    def search_deep(self, query: str) -> list[Package]:
+        """Find packages that the plain name search would miss.
+
+        Matches a binary on disk, a provided capability such as a shared
+        library, or wording buried in the description. All three are index
+        lookups in libdnf5 and come back in well under a tenth of a second.
+        """
+        if len(query) < 3 or self._base is None:
+            return []
+        base = self._base
+        # filter_provides and filter_file only accept a case sensitive GLOB.
+        # Passing IGLOB trips a C++ assertion that aborts the process, so the
+        # comparison type per filter below is deliberate, not incidental.
+        cmp_glob = libdnf5.common.QueryCmp_GLOB
+        cmp_iglob = libdnf5.common.QueryCmp_IGLOB
+        glob = f"*{query}*"
+        found: dict[str, tuple[object, str]] = {}
+
+        def collect(build, reason: str) -> None:
+            try:
+                q = libdnf5.rpm.PackageQuery(base)
+                build(q)
+                q.filter_latest_evr(1)
+                for pkg in q:
+                    arch = pkg.get_arch()
+                    if arch in SRC_ARCHES:
+                        continue
+                    # Deep hits are keyed by name alone: showing nss twice
+                    # because of a 32 bit companion is noise, not detail.
+                    name = pkg.get_name()
+                    previous = found.get(name)
+                    if previous is None or (
+                        previous[0].get_arch() not in PRIMARY_ARCHES
+                        and arch in PRIMARY_ARCHES
+                    ):
+                        found[name] = (pkg, reason)
+            except Exception:
+                pass
+
+        collect(
+            lambda q: q.filter_file([f"*/bin/{query}", f"*/sbin/{query}"], cmp_glob),
+            "ships this command",
+        )
+        collect(lambda q: q.filter_provides([glob], cmp_glob), "provides this")
+        collect(lambda q: q.filter_summary([glob], cmp_iglob), "summary mentions this")
+        collect(lambda q: q.filter_description([glob], cmp_iglob), "described as this")
+
+        out: list[Package] = []
+        low = query.lower()
+        for name, (pkg, reason) in found.items():
+            if low in name.lower():
+                continue  # the plain name filter already shows it
+            arch = pkg.get_arch()
+            out.append(
+                Package(
+                    key=f"{name}.{arch}",
+                    name=name,
+                    version=pkg.get_evr(),
+                    summary=pkg.get_summary() or "",
+                    source=self.id,
+                    origin=pkg.get_repo_id() or "unknown",
+                    state=State.INSTALLED if pkg.is_installed() else State.AVAILABLE,
+                    arch=arch,
+                    size=pkg.get_download_size(),
+                    license=pkg.get_license() or "",
+                    url=pkg.get_url() or "",
+                    description=pkg.get_description() or "",
+                    extra={"match_reason": reason},
                 )
             )
         return out

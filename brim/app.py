@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         window.show()
 
     QTimer.singleShot(60, lambda: window.reload(quiet=start_hidden))
-    if config.get("self_update_check"):
-        QTimer.singleShot(4000, lambda: window.settings.check_self_update(silent=True))
+    if config.get("self_update_mode") in ("startup", "interval"):
+        QTimer.singleShot(4500, lambda: window.settings.check_self_update(silent=True))
 
     return app.exec()

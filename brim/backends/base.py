@@ -100,6 +100,13 @@ class Backend(ABC):
         """
         return []
 
+    def search_deep(self, query: str) -> list[Package]:
+        """Local index lookups beyond the name: files, provides, descriptions.
+
+        Cheap enough to run on every keystroke, unlike `search_remote`.
+        """
+        return []
+
     def sources(self) -> list[Source]:
         return []
 

@@ -19,10 +19,18 @@ DEFAULTS: dict = {
     "check_interval_minutes": 180,
     "notify_updates": True,
     "auto_apply_updates": False,
-    "self_update_url": "",
-    "self_update_check": True,
+    # manual, startup, or interval. The user picks; Brim never decides.
+    "self_update_mode": "startup",
+    "self_update_interval_hours": 24,
+    "self_update_notify": True,
     "confirm_transactions": True,
 }
+
+SELF_UPDATE_MODES = [
+    ("manual", "Only when I click Check"),
+    ("startup", "When Brim starts"),
+    ("interval", "On a schedule"),
+]
 
 
 class Config:

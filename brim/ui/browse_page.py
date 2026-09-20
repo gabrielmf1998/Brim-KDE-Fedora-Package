@@ -32,6 +32,25 @@ STATUSES = [
 ]
 
 
+class DeepSearch(QThread):
+    """Local index lookups: binaries, provided libraries, descriptions."""
+
+    done = Signal(str, list)
+
+    def __init__(self, catalog, query: str, sources: set[str]) -> None:
+        super().__init__()
+        self.catalog = catalog
+        self.query = query
+        self.sources = sources
+
+    def run(self) -> None:
+        try:
+            found = self.catalog.search_deep(self.query, self.sources)
+        except Exception:
+            found = []
+        self.done.emit(self.query, found)
+
+
 class RemoteSearch(QThread):
     """Queries the network catalogs without blocking typing."""
 
@@ -113,7 +132,9 @@ class BrowsePage(QWidget):
         self.config = config
         self.status = "all"
         self._remote: list[Package] = []
+        self._deep: list[Package] = []
         self._search_thread: RemoteSearch | None = None
+        self._deep_thread: DeepSearch | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -165,6 +186,12 @@ class BrowsePage(QWidget):
         self.debounce.setInterval(220)
         self.debounce.timeout.connect(self.refilter)
         self.search.textChanged.connect(lambda _: self.debounce.start())
+
+        self.deep_timer = QTimer(self)
+        self.deep_timer.setSingleShot(True)
+        self.deep_timer.setInterval(380)
+        self.deep_timer.timeout.connect(self._start_deep_search)
+        self.search.textChanged.connect(lambda _: self.deep_timer.start())
 
         self.remote_timer = QTimer(self)
         self.remote_timer.setSingleShot(True)
@@ -316,20 +343,47 @@ class BrowsePage(QWidget):
     def refilter(self) -> None:
         text = self.search.text()
         sources = self.enabled_sources()
-        extra = [p for p in self._remote if p.source in sources] if text.strip() else []
+        if text.strip():
+            extra = [
+                p for p in (self._deep + self._remote) if p.source in sources
+            ]
+        else:
+            extra = []
         shown = self.model.apply_filter(text, sources, self.status, extra)
 
         total = len(self.model.all_packages())
         if text.strip():
             note = f"{shown} matches"
-            if extra:
-                note += f", {len(extra)} from the network"
+            deep = len([p for p in self._deep if p.source in sources])
+            net = len([p for p in self._remote if p.source in sources])
+            if deep:
+                note += f", {deep} by content"
+            if net:
+                note += f", {net} from the network"
             self.result_label.setText(note)
         else:
             self.result_label.setText(f"{shown} of {total} packages")
 
         if shown and not self.table.currentIndex().isValid():
             self.table.selectRow(0)
+
+    def _start_deep_search(self) -> None:
+        query = self.search.text().strip()
+        if len(query) < 3:
+            self._deep = []
+            return
+        if self._deep_thread and self._deep_thread.isRunning():
+            return
+        self._deep_thread = DeepSearch(self.catalog, query, self.enabled_sources())
+        self._deep_thread.done.connect(self._on_deep_done)
+        self._deep_thread.start()
+
+    def _on_deep_done(self, query: str, found: list) -> None:
+        if query != self.search.text().strip():
+            return
+        known = {(p.source, p.key) for p in self.model.all_packages()}
+        self._deep = [p for p in found if (p.source, p.key) not in known]
+        self.refilter()
 
     def _start_remote_search(self) -> None:
         query = self.search.text().strip()

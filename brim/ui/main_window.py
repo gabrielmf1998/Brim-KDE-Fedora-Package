@@ -19,11 +19,12 @@ from ..backends.base import Package
 from ..core.transaction import Action, CommandRunner, TransactionRunner
 from . import theme
 from .browse_page import BrowsePage
+from .help_page import HelpPage
 from .output_dialog import OutputDialog
 from .settings_page import SettingsPage
 from .sources_page import SourcesPage
 
-PAGE_BROWSE, PAGE_SOURCES, PAGE_SETTINGS = range(3)
+PAGE_BROWSE, PAGE_SOURCES, PAGE_SETTINGS, PAGE_HELP = range(4)
 
 
 class CatalogLoader(QThread):
@@ -55,11 +56,13 @@ class MainWindow(QMainWindow):
         self.browse = BrowsePage(catalog, config, self)
         self.sources = SourcesPage(catalog, config, self)
         self.settings = SettingsPage(catalog, config, self)
+        self.help = HelpPage(self)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.browse)
         self.stack.addWidget(self.sources)
         self.stack.addWidget(self.settings)
+        self.stack.addWidget(self.help)
         self.setCentralWidget(self.stack)
 
         self._build_toolbar()
@@ -69,6 +72,12 @@ class MainWindow(QMainWindow):
         self.check_timer = QTimer(self)
         self.check_timer.timeout.connect(lambda: self.reload(quiet=True))
         self._arm_timer()
+
+        self.self_update_timer = QTimer(self)
+        self.self_update_timer.timeout.connect(
+            lambda: self.settings.check_self_update(silent=True)
+        )
+        self._arm_self_update_timer()
 
     # construction
 
@@ -93,6 +102,12 @@ class MainWindow(QMainWindow):
         self.act_settings.setCheckable(True)
         self.act_settings.triggered.connect(lambda: self.go(PAGE_SETTINGS))
         bar.addAction(self.act_settings)
+
+        self.act_help = QAction(theme.icon("help-contents"), "Help", self)
+        self.act_help.setCheckable(True)
+        self.act_help.setShortcut(QKeySequence("F1"))
+        self.act_help.triggered.connect(lambda: self.go(PAGE_HELP))
+        bar.addAction(self.act_help)
 
         spacer = QWidget()
         spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding, spacer.sizePolicy().verticalPolicy())
@@ -136,6 +151,8 @@ class MainWindow(QMainWindow):
         self.sources.run_command.connect(self.run_command)
         self.sources.refresh_requested.connect(lambda: self.reload())
         self.settings.backends_changed.connect(self._on_backends_changed)
+        self.settings.update_available.connect(self._on_brim_update)
+        self.settings.update_mode_changed.connect(self._arm_self_update_timer)
 
     def attach_tray(self, tray) -> None:
         self.tray = tray
@@ -152,8 +169,11 @@ class MainWindow(QMainWindow):
         self.act_browse.setChecked(page == PAGE_BROWSE)
         self.act_sources.setChecked(page == PAGE_SOURCES)
         self.act_settings.setChecked(page == PAGE_SETTINGS)
+        self.act_help.setChecked(page == PAGE_HELP)
         if page == PAGE_SOURCES:
             self.sources.reload()
+        elif page == PAGE_HELP:
+            self.help.refresh()
 
     def _show_updates(self) -> None:
         self.show_window()
@@ -238,6 +258,32 @@ class MainWindow(QMainWindow):
         if minutes > 0:
             self.check_timer.start(minutes * 60 * 1000)
 
+    def _arm_self_update_timer(self) -> None:
+        """Only the interval mode ticks. Manual and startup never poll."""
+        self.self_update_timer.stop()
+        if self.config.get("self_update_mode") != "interval":
+            return
+        hours = max(1, int(self.config.get("self_update_interval_hours") or 24))
+        self.self_update_timer.start(hours * 3600 * 1000)
+
+    def _on_brim_update(self, available: bool, version: str) -> None:
+        """A new Brim release exists. Surface it without stealing focus."""
+        if not available:
+            self.act_help.setIcon(theme.icon("help-contents"))
+            return
+        self.status.showMessage(
+            f"Brim {version} is available. Open Settings to update.", 20000
+        )
+        self.act_settings.setIcon(theme.icon("system-software-update"))
+        self.act_settings.setToolTip(f"Brim {version} is available")
+        if self.tray and self.config.get("self_update_notify"):
+            self.tray.showMessage(
+                "Brim update",
+                f"Brim {version} is available. Open Settings to install it.",
+                theme.icon("system-software-update"),
+                9000,
+            )
+
     # transactions
 
     def run_transaction(self, action: str, packages: list[Package]) -> None:
@@ -271,12 +317,41 @@ class MainWindow(QMainWindow):
         )
         box.setText(f"{action.title()} the following?")
         box.setInformativeText(names)
+
+        notes: list[str] = []
         if any(self.catalog.backends[p.source].needs_root for p in packages):
-            box.setDetailedText(
+            notes.append(
                 "Anything from DNF or COPR runs through pkexec, so you will be "
-                "asked to authenticate. Your dnf.conf rules, excludepkgs included, "
-                "still apply."
+                "asked to authenticate. Your dnf.conf rules, excludepkgs "
+                "included, still apply."
             )
+
+        if action == Action.INSTALL:
+            coprs = sorted({p.origin for p in packages if p.source == "copr"})
+            if coprs:
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setInformativeText(
+                    names
+                    + "\n\nThis enables a community repository: "
+                    + ", ".join(coprs)
+                    + "\nCOPR builds are not reviewed by Fedora."
+                )
+                notes.append(
+                    "COPR is Fedora's community build service. Anyone can publish "
+                    "there. Nobody reviews the code or the packaging, security "
+                    "updates arrive only if the owner keeps maintaining it, and a "
+                    "COPR package can conflict with official ones. Check the "
+                    "project page before trusting it. See Help for the full "
+                    "picture."
+                )
+            if any(p.source == "appimage" for p in packages):
+                notes.append(
+                    "AppImages come straight from upstream with no distribution "
+                    "in between and no sandbox. They are not reviewed by anyone."
+                )
+
+        if notes:
+            box.setDetailedText("\n\n".join(notes))
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         )

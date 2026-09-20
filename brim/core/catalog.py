@@ -59,6 +59,23 @@ class Catalog:
                 found.extend(chunk)
         return found
 
+    def search_deep(self, query: str, enabled_ids: set[str]) -> list[Package]:
+        """Local index lookups past the name. Fast enough to run while typing."""
+        backends = self.active(enabled_ids)
+        found: list[Package] = []
+
+        def run(b: Backend) -> list[Package]:
+            try:
+                return b.search_deep(query)
+            except Exception as exc:
+                self.errors[b.id] = str(exc)
+                return []
+
+        with ThreadPoolExecutor(max_workers=max(1, len(backends))) as pool:
+            for chunk in pool.map(run, backends):
+                found.extend(chunk)
+        return found
+
     def sources(self, enabled_ids: set[str]) -> list[Source]:
         out: list[Source] = []
         for b in self.active(enabled_ids):

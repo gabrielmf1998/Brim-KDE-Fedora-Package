@@ -5,9 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -21,11 +22,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import updater
+from ..core.config import SELF_UPDATE_MODES
 from . import theme
 
 
 class SettingsPage(QWidget):
     backends_changed = Signal()
+    update_available = Signal(bool, str)
+    update_mode_changed = Signal()
 
     def __init__(self, catalog, config, parent=None) -> None:
         super().__init__(parent)
@@ -33,6 +37,7 @@ class SettingsPage(QWidget):
         self.config = config
         self._check_thread = None
         self._apply_thread = None
+        self._pending = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -159,24 +164,47 @@ class SettingsPage(QWidget):
 
         self.lbl_version = QLabel()
         self._refresh_version()
+        self.lbl_version.setWordWrap(True)
         layout.addWidget(self.lbl_version)
 
-        self.chk_self_check = QCheckBox("Check for a new Brim on startup")
-        self.chk_self_check.setChecked(self.config.get("self_update_check"))
-        self.chk_self_check.toggled.connect(
-            lambda v: self.config.set("self_update_check", v)
+        form = QFormLayout()
+        self.combo_mode = QComboBox()
+        for key, label in SELF_UPDATE_MODES:
+            self.combo_mode.addItem(label, key)
+        current = self.config.get("self_update_mode")
+        index = self.combo_mode.findData(current)
+        self.combo_mode.setCurrentIndex(index if index >= 0 else 1)
+        self.combo_mode.currentIndexChanged.connect(self._mode_changed)
+        form.addRow("Check for a new Brim", self.combo_mode)
+
+        self.spin_self = QSpinBox()
+        self.spin_self.setRange(1, 720)
+        self.spin_self.setSuffix(" hours")
+        self.spin_self.setValue(int(self.config.get("self_update_interval_hours")))
+        self.spin_self.valueChanged.connect(
+            lambda v: self.config.set("self_update_interval_hours", v)
         )
-        layout.addWidget(self.chk_self_check)
+        form.addRow("Every", self.spin_self)
+        layout.addLayout(form)
+
+        self.chk_self_notify = QCheckBox("Tell me in the tray when a new Brim is out")
+        self.chk_self_notify.setChecked(self.config.get("self_update_notify"))
+        self.chk_self_notify.toggled.connect(
+            lambda v: self.config.set("self_update_notify", v)
+        )
+        layout.addWidget(self.chk_self_notify)
 
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
-        self.lbl_status.setStyleSheet("opacity: 0.8;")
+        self.lbl_status.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_status.setOpenExternalLinks(True)
+        self.lbl_status.setStyleSheet("opacity: 0.85;")
         layout.addWidget(self.lbl_status)
 
         row = QHBoxLayout()
-        self.btn_check = QPushButton("Check for updates")
+        self.btn_check = QPushButton("Check now")
         self.btn_check.setIcon(theme.icon("view-refresh"))
-        self.btn_check.clicked.connect(self.check_self_update)
+        self.btn_check.clicked.connect(lambda: self.check_self_update(False))
         row.addWidget(self.btn_check)
 
         self.btn_apply = QPushButton("Update Brim")
@@ -186,50 +214,73 @@ class SettingsPage(QWidget):
         row.addWidget(self.btn_apply)
         row.addStretch(1)
         layout.addLayout(row)
+
+        self._mode_changed()
         return box
 
-    def _refresh_version(self) -> None:
-        if updater.is_git_checkout():
-            self.lbl_version.setText(
-                f"Running from a git checkout at revision <b>{updater.current_describe()}</b>"
-            )
-        else:
-            self.lbl_version.setText(
-                "Not running from a git checkout, so self update is unavailable."
-            )
+    def _mode_changed(self) -> None:
+        mode = self.combo_mode.currentData()
+        self.config.set("self_update_mode", mode)
+        self.spin_self.setEnabled(mode == "interval")
+        self.update_mode_changed.emit()
 
-    def check_self_update(self, silent: bool = False) -> None:
+    def _refresh_version(self) -> None:
+        self.lbl_version.setText(
+            f"Brim <b>{updater.current_describe()}</b>, "
+            f"{updater.install_kind_label()}."
+        )
+
+    def check_self_update(self, silent: bool = True) -> None:
         if self._check_thread and self._check_thread.isRunning():
             return
         self.btn_check.setEnabled(False)
-        self.lbl_status.setText("Checking the remote")
+        if not silent:
+            self.lbl_status.setText("Checking GitHub, then GitLab")
         self._check_thread = updater.UpdateCheck()
         self._check_thread.result.connect(
-            lambda ok, behind, msg: self._on_check(ok, behind, msg, silent)
+            lambda ok, release, msg: self._on_check(ok, release, msg, silent)
         )
         self._check_thread.start()
 
-    def _on_check(self, ok: bool, behind: int, message: str, silent: bool) -> None:
+    def _on_check(self, ok: bool, release, message: str, silent: bool) -> None:
         self.btn_check.setEnabled(True)
+        self._pending = release
+
         if not ok:
-            self.lbl_status.setText(message)
+            self.lbl_status.setText(
+                "" if silent else f"<span style='opacity:0.8'>{message}</span>"
+            )
             self.btn_apply.setEnabled(False)
             return
-        if behind:
-            self.lbl_status.setText(
-                f"<b>{behind} new commit{'s' if behind > 1 else ''} upstream</b><br>"
-                f"<code>{message.replace(chr(10), '<br>')}</code>"
-            )
-            self.btn_apply.setEnabled(True)
-        else:
+
+        if release is None:
             self.lbl_status.setText(message)
             self.btn_apply.setEnabled(False)
+            self.update_available.emit(False, "")
+            return
+
+        colour = theme.state_color("upgradable").name()
+        notes = (release.notes or "").strip()
+        if len(notes) > 600:
+            notes = notes[:600] + "..."
+        safe = notes.replace("<", "&lt;").replace(">", "&gt;").replace(chr(10), "<br>")
+        link = (
+            f"<br><a href='{release.url}'>Release page</a>" if release.url else ""
+        )
+        self.lbl_status.setText(
+            f"<span style='color:{colour};font-weight:600;'>"
+            f"Brim {release.version} is available</span>"
+            f" <span style='opacity:0.7'>via {release.host}</span>"
+            f"{'<br>' + safe if safe else ''}{link}"
+        )
+        self.btn_apply.setEnabled(True)
+        self.update_available.emit(True, str(release.version))
 
     def apply_self_update(self) -> None:
         from .output_dialog import OutputDialog
 
         dialog = OutputDialog("Updating Brim", self)
-        self._apply_thread = updater.UpdateApply()
+        self._apply_thread = updater.UpdateApply(self._pending)
         dialog.attach(self._apply_thread)
         dialog.exec()
         self._refresh_version()
