@@ -60,6 +60,46 @@ done
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
+# A user level launcher shadows the system one, because XDG searches
+# ~/.local/share/applications first. Installing the RPM while an AppImage
+# entry is still lying around means the menu keeps pointing at the AppImage,
+# and if that file is gone the launcher just fails. Clear it either way.
+clear_user_launcher() {
+  local removed=0
+  if [ -f "$DESKTOP_DIR/brim.desktop" ]; then
+    rm -f "$DESKTOP_DIR/brim.desktop"
+    removed=1
+  fi
+  if [ -L "$BIN_DIR/brim" ] || [ -f "$BIN_DIR/brim" ]; then
+    rm -f "$BIN_DIR/brim"
+    removed=1
+  fi
+  rm -f "$ICON_DIR/brim.svg"
+  if [ "$removed" -eq 1 ]; then
+    need update-desktop-database && update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    say "${dim}Removed the old user level launcher so the menu uses this install.${reset}"
+  fi
+}
+
+# Whatever the menu will run has to exist. A launcher pointing at a deleted
+# AppImage is the exact failure this check is here to catch.
+verify_launcher() {
+  local target="$1" entry="$2"
+  if [ ! -e "$target" ]; then
+    warn "Installed launcher points at $target, which is missing."
+    return 1
+  fi
+  if [ -n "$entry" ] && [ -f "$entry" ]; then
+    local exec_line
+    exec_line="$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$entry" | head -1)"
+    if [ -n "$exec_line" ] && [ ! -e "$exec_line" ]; then
+      warn "Desktop entry $entry points at $exec_line, which is missing."
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # Escalate the way that actually works here. Piping this script into bash
 # leaves no terminal for sudo to prompt on, so fall back to pkexec, which
 # asks graphically. Trying sudo blind would just fail with a confusing error.
@@ -100,6 +140,7 @@ if [ "$DO_UNINSTALL" -eq 1 ]; then
   rm -f "$APPS_DIR"/Brim-*.AppImage
   rm -f "$BIN_DIR/brim" "$DESKTOP_DIR/brim.desktop" "$ICON_DIR/brim.svg"
   rm -f "$HOME/.config/autostart/brim.desktop"
+  need update-desktop-database && update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
   ok "Brim removed. Settings in ~/.config/brim were kept."
   exit 0
 fi
@@ -218,6 +259,17 @@ case "$METHOD" in
     curl -fSL --progress-bar -o "$TMP/brim.rpm" "$RPM_URL"
     # pkexec drops the caller's environment, so hand dnf an absolute path.
     as_root dnf install -y "$TMP/brim.rpm"
+
+    clear_user_launcher
+    if ls "$APPS_DIR"/Brim-*.AppImage >/dev/null 2>&1; then
+      say ""
+      warn "An AppImage copy is still in $APPS_DIR."
+      say "The RPM is what runs now. Delete the AppImage if you do not want it:"
+      say "  rm $APPS_DIR/Brim-*.AppImage"
+    fi
+
+    verify_launcher /usr/bin/brim /usr/share/applications/brim.desktop \
+      || die "The install finished but the launcher is broken. Please report this."
     ok "Installed. Run it with: brim"
     ;;
 
@@ -246,9 +298,23 @@ case "$METHOD" in
     step "Installing the AppImage"
     say "${dim}$APPIMAGE_URL${reset}"
     mkdir -p "$APPS_DIR" "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR"
-    rm -f "$APPS_DIR"/Brim-*.AppImage
+
+    if rpm -q brim >/dev/null 2>&1; then
+      warn "Brim is also installed as an RPM."
+      say "Two copies will fight over the menu entry and over the brim command."
+      say "Remove the package first if you want only the AppImage:"
+      say "  sudo dnf remove brim"
+      say ""
+    fi
+
     TARGET="$APPS_DIR/Brim-${VERSION#v}-x86_64.AppImage"
-    curl -fSL --progress-bar -o "$TARGET" "$APPIMAGE_URL"
+    # Download first, then clear the old ones, so a failed download never
+    # leaves you with no Brim at all.
+    curl -fSL --progress-bar -o "$TARGET.part" "$APPIMAGE_URL"
+    for old_image in "$APPS_DIR"/Brim-*.AppImage; do
+      [ -e "$old_image" ] && [ "$old_image" != "$TARGET" ] && rm -f "$old_image"
+    done
+    mv -f "$TARGET.part" "$TARGET"
     chmod +x "$TARGET"
     ln -sf "$TARGET" "$BIN_DIR/brim"
 
@@ -272,6 +338,9 @@ StartupWMClass=brim
 DESKTOP
 
     need update-desktop-database && update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+
+    verify_launcher "$TARGET" "$DESKTOP_DIR/brim.desktop" \
+      || die "The install finished but the launcher is broken. Please report this."
     ok "Installed to $TARGET"
 
     case ":$PATH:" in

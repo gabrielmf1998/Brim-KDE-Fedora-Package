@@ -2,7 +2,7 @@
 %global appdir  %{_prefix}/lib/%{appname}
 
 Name:           brim
-Version:        1.0.5
+Version:        1.0.6
 Release:        1%{?dist}
 Summary:        Unified package manager for Fedora: DNF, Flatpak, COPR and AppImage in one window
 
@@ -74,6 +74,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{appname}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{appname}.svg
 
 %changelog
+* Sun Sep 20 2026 kxinha <gabriel17166@gmail.com> - 1.0.6-1
+- Installing the RPM clears a leftover user level AppImage launcher, which
+  otherwise shadows the system menu entry and can point at a deleted file
+- Brim removes its own launcher on startup when the target no longer exists
+- The installer verifies the launcher it just wrote actually runs
+- Installing an AppImage downloads before clearing the previous one
+
 * Sun Sep 20 2026 kxinha <gabriel17166@gmail.com> - 1.0.5-1
 - Point every URL at the renamed GitHub repository, so the installer and the
   self updater stop relying on a redirect

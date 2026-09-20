@@ -15,6 +15,7 @@ from .backends.dnf import DnfBackend
 from .backends.flatpak import FlatpakBackend
 from .core.catalog import Catalog
 from .core.config import Config
+from .core.launcher import repair as repair_launchers
 from .ui.main_window import MainWindow
 from .ui.threads import any_running, exit_now, stop_registered
 from .ui.tray import Tray
@@ -69,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
     app.setDesktopFileName("brim")
     app.setQuitOnLastWindowClosed(False)
     apply_style(app)
+
+    # A launcher left pointing at a deleted AppImage fails before Brim even
+    # starts, so the one place that can fix it is the copy that did start.
+    for cleared in repair_launchers():
+        print(f"brim: removed a broken launcher at {cleared}", file=sys.stderr)
 
     config = Config()
     catalog = build_catalog()

@@ -3,7 +3,7 @@
 The RPM spec, the AppImage build and the update checker all read this.
 """
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 APP_ID = "io.github.gabrielmf1998.brim"
 APP_NAME = "Brim"
